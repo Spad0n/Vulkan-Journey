@@ -32,6 +32,7 @@ struct Context {
     Uint32 queueFamilyIndex;
     VkDevice device;
     VkQueue queue;
+    VkSwapchainKHR swapchain;
 };
 
 static void errorCallback(Sint32 error, const char* description) {
@@ -45,6 +46,10 @@ static void destroyInstance(Context& ctx);
 static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc);
 
 static void destroyDevice(Context& ctx);
+
+static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc);
+
+static void destroySwapchain(Context& ctx);
 
 Sint32 main() {
     SystemAllocator sys_alloc;
@@ -73,6 +78,9 @@ Sint32 main() {
 
     createDevice(ctx, temp_alloc);
     defer(destroyDevice(ctx));
+
+    createSwapchain(ctx, temp_alloc);
+    destroySwapchain(ctx);
 
     while (!glfwWindowShouldClose(ctx.window)) {
         temp_alloc.reset();
@@ -185,17 +193,78 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
         }
     };
 
+    const char* extensions[] = {
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+    };
+
     VkDeviceCreateInfo deviceCI {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = (Uint32)STATIC_LEN(queueCreateInfos),
         .pQueueCreateInfos = queueCreateInfos,
+        .enabledExtensionCount = (Uint32)STATIC_LEN(extensions),
+        .ppEnabledExtensionNames = extensions,
     };
 
     vkCheck(vkCreateDevice(ctx.physicalDevice, &deviceCI, 0, &ctx.device));
+
+    volkLoadDevice(ctx.device);
+    assert(vkBeginCommandBuffer != nullptr && "Failed to load Vulkan device API");
 
     vkGetDeviceQueue(ctx.device, ctx.queueFamilyIndex, 0, &ctx.queue);
 }
 
 static void destroyDevice(Context& ctx) {
     vkDestroyDevice(ctx.device, nullptr);
+}
+
+static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
+    VkSurfaceCapabilitiesKHR surfaceCaps{0};
+    vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice, ctx.surface, &surfaceCaps));
+
+    Uint32 imageCount = MAX(3, surfaceCaps.minImageCount);
+    if (surfaceCaps.maxImageCount != 0) {
+        imageCount = MIN(imageCount, surfaceCaps.maxImageCount);
+    }
+
+    Uint32 surfaceFormatCount = 0;
+    vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(ctx.physicalDevice, ctx.surface, &surfaceFormatCount, nullptr));
+
+    Array<VkSurfaceFormatKHR> surfaceFormats(temp_alloc);
+    surfaceFormats.resize(surfaceFormatCount);
+
+    vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(ctx.physicalDevice, ctx.surface, &surfaceFormatCount, surfaceFormats.data()));
+
+    VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0];
+    for (VkSurfaceFormatKHR candidate : surfaceFormats) {
+        if (candidate.format & VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace & VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+            surfaceFormat = candidate;
+            break;
+        }
+    }
+
+    Sint32 width = 0, height = 0;
+    glfwGetFramebufferSize(ctx.window, &width, &height);
+
+    VkSwapchainCreateInfoKHR swapchainCI = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = ctx.surface,
+        .minImageCount = imageCount,
+        .imageFormat = surfaceFormat.format,
+        .imageColorSpace = surfaceFormat.colorSpace,
+        .imageExtent = {
+            .width  = (Uint32)width,
+            .height = (Uint32)height,
+        },
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .preTransform = surfaceCaps.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = true
+    };
+    vkCheck(vkCreateSwapchainKHR(ctx.device, &swapchainCI, nullptr, &ctx.swapchain));
+}
+
+static void destroySwapchain(Context& ctx) {
+    vkDestroySwapchainKHR(ctx.device, ctx.swapchain, nullptr);
 }
