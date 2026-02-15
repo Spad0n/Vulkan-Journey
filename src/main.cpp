@@ -94,6 +94,24 @@ Sint32 main() {
     createSwapchain(ctx, temp_alloc);
     defer(destroySwapchain(ctx));
 
+    VkCommandPool commandPool{0};
+    VkCommandPoolCreateInfo commandPoolCI {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = ctx.queueFamilyIndex,
+    };
+    vkCheck(vkCreateCommandPool(ctx.device, &commandPoolCI, nullptr, &commandPool));
+    defer(vkDestroyCommandPool(ctx.device, commandPool, nullptr));
+
+    VkCommandBuffer cmd{0};
+    VkCommandBufferAllocateInfo commandBufferAI {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    vkCheck(vkAllocateCommandBuffers(ctx.device, &commandBufferAI, &cmd));
+
     VkSemaphore acquireSemaphore{0};
     VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &acquireSemaphore));
@@ -118,12 +136,26 @@ Sint32 main() {
 
         auto releaseSemaphore = ctx.swapchain.imageReadySemaphores[imageIndex];
 
+        vkCheck(vkResetCommandPool(ctx.device, commandPool, {}));
+
+        VkCommandBufferBeginInfo beginInfo {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        };
+        vkCheck(vkBeginCommandBuffer(cmd, &beginInfo));
+
+        // record GPU commands
+
+        vkCheck(vkEndCommandBuffer(cmd));
+
         VkPipelineStageFlags waitStageFlags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submitInfo {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &acquireSemaphore,
             .pWaitDstStageMask = &waitStageFlags,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd,
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &releaseSemaphore,
         };
