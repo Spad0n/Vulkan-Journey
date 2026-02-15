@@ -21,11 +21,15 @@ static inline void check_location(Bool result, const char *filePath, Uint32 line
 struct Swapchain {
     constexpr Swapchain(Allocator& allocator)
         : images{allocator}
+        , imageViews{allocator}
         , imageReadySemaphores{allocator}
     {}
 
     VkSwapchainKHR handle;
+    Uint32 width;
+    Uint32 height;
     Array<VkImage> images;
+    Array<VkImageView> imageViews;
     Array<VkSemaphore> imageReadySemaphores;
 };
 
@@ -115,6 +119,7 @@ Sint32 main() {
     VkSemaphore acquireSemaphore{0};
     VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &acquireSemaphore));
+    defer(vkDestroySemaphore(ctx.device, acquireSemaphore, nullptr));
 
     VkFence frameFence{0};
     VkFenceCreateInfo fenceCI {
@@ -122,6 +127,7 @@ Sint32 main() {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
     vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frameFence));
+    defer(vkDestroyFence(ctx.device, frameFence, nullptr));
 
     while (!glfwWindowShouldClose(ctx.window)) {
         temp_alloc.reset();
@@ -145,6 +151,32 @@ Sint32 main() {
         vkCheck(vkBeginCommandBuffer(cmd, &beginInfo));
 
         // record GPU commands
+        VkRenderingAttachmentInfo colorAttachment {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = ctx.swapchain.imageViews[imageIndex],
+            .imageLayout = VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .clearValue = {
+                .color = { .float32 = {1, 0, 0, 1}}
+            }
+        };
+        VkRenderingInfo renderingInfo {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {
+                .offset = { 0, 0 },
+                .extent = { ctx.swapchain.width, ctx.swapchain.height },
+            },
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &colorAttachment,
+        };
+
+        vkCmdBeginRendering(cmd, &renderingInfo);
+
+        // draw stuff
+
+        vkCmdEndRendering(cmd);
 
         vkCheck(vkEndCommandBuffer(cmd));
 
@@ -172,6 +204,8 @@ Sint32 main() {
         // TODO: handle SUBOPTIMAL_KHR and ERROR_OUT_OF_DATE_KHR
         vkCheck(vkQueuePresentKHR(ctx.queue, &presentInfo));
     }
+
+    vkDeviceWaitIdle(ctx.device);
 
     return 0;
 }
@@ -283,8 +317,14 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME
     };
 
+    VkPhysicalDeviceVulkan13Features vulkan13Features {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .dynamicRendering = true,
+    };
+
     VkDeviceCreateInfo deviceCI {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &vulkan13Features,
         .queueCreateInfoCount = (Uint32)STATIC_LEN(queueCreateInfos),
         .pQueueCreateInfos = queueCreateInfos,
         .enabledExtensionCount = (Uint32)STATIC_LEN(extensions),
@@ -344,8 +384,10 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
         }
     }
 
-    Sint32 width = 0, height = 0;
-    glfwGetFramebufferSize(ctx.window, &width, &height);
+    Sint32 w = 0, h = 0;
+    glfwGetFramebufferSize(ctx.window, &w, &h);
+    ctx.swapchain.width = (Uint32)w;
+    ctx.swapchain.height = (Uint32)h;
 
     VkSwapchainCreateInfoKHR swapchainCI = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -354,8 +396,8 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
         .imageFormat = surfaceFormat.format,
         .imageColorSpace = surfaceFormat.colorSpace,
         .imageExtent = {
-            .width  = (Uint32)width,
-            .height = (Uint32)height,
+            .width  = ctx.swapchain.width,
+            .height = ctx.swapchain.height,
         },
         .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -369,6 +411,22 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
     vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, nullptr));
     ctx.swapchain.images.resize(imageCount);
     vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, ctx.swapchain.images.data()));
+
+    ctx.swapchain.imageViews.resize(imageCount);
+    for (Ulen i = 0; i < ctx.swapchain.images.length(); i++) {
+        VkImageViewCreateInfo imageCI {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = ctx.swapchain.images[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = surfaceFormat.format,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        };
+        vkCheck(vkCreateImageView(ctx.device, &imageCI, nullptr, &ctx.swapchain.imageViews[i]));
+    }
 
     ctx.swapchain.imageReadySemaphores.resize(imageCount);
 
@@ -384,5 +442,8 @@ static void destroySwapchain(Context& ctx) {
         vkDestroySemaphore(ctx.device, semaphore, nullptr);
     }
     ctx.swapchain.imageReadySemaphores.destroy();
+    for (auto& imageView : ctx.swapchain.imageViews) {
+        vkDestroyImageView(ctx.device, imageView, nullptr);
+    }
     vkDestroySwapchainKHR(ctx.device, ctx.swapchain.handle, nullptr);
 }
