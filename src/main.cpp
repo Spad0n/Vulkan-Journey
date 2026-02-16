@@ -150,6 +150,28 @@ Sint32 main() {
         };
         vkCheck(vkBeginCommandBuffer(cmd, &beginInfo));
 
+        VkImageMemoryBarrier2 transitionToColorAttachmentBarrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .image = ctx.swapchain.images[imageIndex],
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        };
+        VkDependencyInfo dependencyInfo {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &transitionToColorAttachmentBarrier,
+        };
+        vkCmdPipelineBarrier2(cmd, &dependencyInfo);
+
         // record GPU commands
         VkRenderingAttachmentInfo colorAttachment {
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -177,6 +199,28 @@ Sint32 main() {
         // draw stuff
 
         vkCmdEndRendering(cmd);
+
+        VkImageMemoryBarrier2 transitionToPresentSrcBarrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = {},
+            .dstAccessMask = {},
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .image = ctx.swapchain.images[imageIndex],
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
+        };
+        dependencyInfo = {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &transitionToPresentSrcBarrier,
+        };
+        vkCmdPipelineBarrier2(cmd, &dependencyInfo);
 
         vkCheck(vkEndCommandBuffer(cmd));
 
@@ -319,6 +363,7 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
 
     VkPhysicalDeviceVulkan13Features vulkan13Features {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2 = true,
         .dynamicRendering = true,
     };
 
