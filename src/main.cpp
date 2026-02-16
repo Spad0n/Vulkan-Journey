@@ -27,10 +27,11 @@ static Array<Uint8> loadFile(Allocator& allocator, StringView fileName) {
 }
 
 #define vkCheck(result) check_location((result), __FILE__, __LINE__)
-static inline void check_location(Bool result, const char *filePath, Uint32 line) {
+static inline void check_location(VkResult result, const char *filePath, Uint32 line) {
     // TODO: create cases on different error
     if (result != VK_SUCCESS) {
         fprintf(stderr, "%s:%d:Vulkan failure: %d\n", filePath, line, result);
+        abort();
     }
 }
 
@@ -51,6 +52,7 @@ struct Swapchain {
     VkSwapchainKHR handle;
     Uint32 width;
     Uint32 height;
+    VkFormat imageFormat;
     Array<VkImage> images;
     Array<VkImageView> imageViews;
     Array<VkSemaphore> presentSemaphores;
@@ -74,7 +76,7 @@ struct Context {
     Swapchain swapchain;
     PerFrameData perFrame[NUM_FRAMES_IN_FLIGHT];
     Uint8 frameIndex = 0;
-    VkShaderEXT shaders[2];
+    VkPipeline pipeline;
     VkPipelineLayout pipelineLayout;
 };
 
@@ -98,66 +100,54 @@ static void createFrames(Context& ctx);
 
 static void destroyFrames(Context& ctx);
 
-static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc);
+static void createGraphicsPipeline(Context& ctx, TemporaryAllocator& temp_alloc);
 
-static void destroyShaders(Context& ctx);
+static void destroyGraphicsPipeline(Context& ctx);
 
 static void render(Context& ctx, VkCommandBuffer cmd) {
-    VkShaderStageFlagBits shaderStages[2] = { VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT };
-    vkCmdBindShadersEXT(cmd, 2, shaderStages, ctx.shaders);
+    // bind the grahpic pipeline
+    vkCmdBindPipeline(cmd,
+                      VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      ctx.pipeline);
 
-    VkViewport viewport {
-        .width = (Float32)ctx.swapchain.width,
-        .height = (Float32)ctx.swapchain.height,
-        .minDepth = 0,
-        .maxDepth = 1,
+    // dynamic viewport
+    VkViewport viewport{
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = (float)ctx.swapchain.width,
+        .height = (float)ctx.swapchain.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
     };
-    vkCmdSetViewportWithCount(cmd, 1, &viewport);
 
-    VkRect2D rect2D {
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+    // dynamic Scissor
+    VkRect2D scissor{
+        .offset = {0, 0},
         .extent = {
-            .width = ctx.swapchain.width,
-            .height = ctx.swapchain.height,
+            ctx.swapchain.width,
+            ctx.swapchain.height
         }
     };
-    vkCmdSetScissorWithCount(cmd, 1, &rect2D);
 
-    vkCmdSetRasterizerDiscardEnable(cmd, false);
-
-    vkCmdSetVertexInputEXT(cmd, 0, nullptr, 0, nullptr);
-    vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-    vkCmdSetPrimitiveRestartEnable(cmd, false);
-
-    vkCmdSetRasterizationSamplesEXT(cmd, VK_SAMPLE_COUNT_1_BIT);
-    auto sampleMask = VkSampleMask(1);
-    vkCmdSetSampleMaskEXT(cmd, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
-    vkCmdSetAlphaToCoverageEnableEXT(cmd, false);
-
-    vkCmdSetPolygonModeEXT(cmd, VK_POLYGON_MODE_FILL);
-    vkCmdSetCullMode(cmd, {});
-    vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-
-    vkCmdSetDepthTestEnable(cmd, false);
-    vkCmdSetDepthWriteEnable(cmd, false);
-    vkCmdSetDepthBiasEnable(cmd, false);
-
-    vkCmdSetStencilTestEnable(cmd, false);
-
-    Uint32 bfalse = 0;
-    vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &bfalse);
-
-    VkColorComponentFlags colorMask {
-        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-    };
-    vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &colorMask);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
 
     struct Push {
         Float32 color[3];
     };
-    auto push = Push {
-        .color { 0.0f, 0.5f, 0.0f }
+
+    Push push{
+        { 0.0f, 0.5f, 0.0f }
     };
-    vkCmdPushConstants(cmd, ctx.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+
+    vkCmdPushConstants(cmd,
+                       ctx.pipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0,
+                       sizeof(Push),
+                       &push);
 
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }
@@ -193,8 +183,8 @@ Sint32 main() {
     createSwapchain(ctx, temp_alloc);
     defer(destroySwapchain(ctx));
 
-    createShaders(ctx, temp_alloc);
-    defer(destroyShaders(ctx));
+    createGraphicsPipeline(ctx, temp_alloc);
+    defer(destroyGraphicsPipeline(ctx));
 
     createFrames(ctx);
     defer(destroyFrames(ctx));
@@ -342,7 +332,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkDebugUtilsMessengerCallbackEXT(VkDebugUt
 static void createInstance(Context& ctx, TemporaryAllocator& temp_alloc) {
     const char* layers[] = {
         "VK_LAYER_KHRONOS_validation",
-        "VK_LAYER_KHRONOS_shader_object",
+        //"VK_LAYER_KHRONOS_shader_object",
     };
 
     Array<const char*> extensions(temp_alloc);
@@ -435,7 +425,7 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
 
     const char* extensions[] = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
+        //VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
     };
 
     VkPhysicalDeviceVulkan13Features vulkan13Features {
@@ -444,15 +434,9 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
         .dynamicRendering = true,
     };
 
-    VkPhysicalDeviceShaderObjectFeaturesEXT physicalDeviceFeatures {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-        .pNext = &vulkan13Features,
-        .shaderObject = true,
-    };
-
     VkDeviceCreateInfo deviceCI {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &physicalDeviceFeatures,
+        .pNext = &vulkan13Features,
         .queueCreateInfoCount = (Uint32)STATIC_LEN(queueCreateInfos),
         .pQueueCreateInfos = queueCreateInfos,
         .enabledExtensionCount = (Uint32)STATIC_LEN(extensions),
@@ -490,11 +474,12 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
 
     VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0];
     for (VkSurfaceFormatKHR candidate : surfaceFormats) {
-        if (candidate.format & VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace & VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+        if (candidate.format == VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
             surfaceFormat = candidate;
             break;
         }
     }
+    ctx.swapchain.imageFormat = surfaceFormat.format;
 
     Uint32 presentModeCount = 0;
     vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(ctx.physicalDevice, ctx.surface, &presentModeCount, nullptr));
@@ -614,55 +599,139 @@ static void destroyFrames(Context& ctx) {
     }
 }
 
-static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc) {
-    VkPushConstantRange pushConstantRanges[] = {
-        {
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-            .size = 128,
-        }
-    };
-    VkPipelineLayoutCreateInfo pipelineLayoutCI {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
-        .pPushConstantRanges = pushConstantRanges,
-    };
-    vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.pipelineLayout));
-
+static void createGraphicsPipeline(Context& ctx, TemporaryAllocator& temp_alloc) {
     Array<Uint8> fragCode = loadFile(temp_alloc, "shaders/spv/shader.frag.spv");
     Array<Uint8> vertCode = loadFile(temp_alloc, "shaders/spv/shader.vert.spv");
 
-    VkShaderCreateInfoEXT shaderCIS[2] {
+    VkShaderModule vertModule;
+    VkShaderModule fragModule;
+
+    VkShaderModuleCreateInfo moduleCI{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+    };
+
+    moduleCI.codeSize = vertCode.length();
+    moduleCI.pCode = (Uint32*)vertCode.data();
+    vkCheck(vkCreateShaderModule(ctx.device, &moduleCI, nullptr, &vertModule));
+    defer(vkDestroyShaderModule(ctx.device, vertModule, nullptr));
+
+    moduleCI.codeSize = fragCode.length();
+    moduleCI.pCode = (Uint32*)fragCode.data();
+    vkCheck(vkCreateShaderModule(ctx.device, &moduleCI, nullptr, &fragModule));
+    defer(vkDestroyShaderModule(ctx.device, fragModule, nullptr));
+
+    // --- Shader stages ---
+    VkPipelineShaderStageCreateInfo stages[2]{
         {
-            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-            .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT ,
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_VERTEX_BIT,
-            .nextStage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-            .codeSize = vertCode.length(),
-            .pCode = vertCode.data(),
-            .pName = "main",
-            .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
-            .pPushConstantRanges = pushConstantRanges,
+            .module = vertModule,
+            .pName = "main"
         },
         {
-            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-            .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT ,
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
-            .codeSize = fragCode.length(),
-            .pCode = fragCode.data(),
-            .pName = "main",
-            .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
-            .pPushConstantRanges = pushConstantRanges,
+            .module = fragModule,
+            .pName = "main"
         }
     };
-    vkCheck(vkCreateShadersEXT(ctx.device, 2, shaderCIS, nullptr, ctx.shaders));
+
+    // --- Pipeline layout (push constants) ---
+    VkPushConstantRange pushRange{
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        .offset = 0,
+        .size = 128
+    };
+
+    VkPipelineLayoutCreateInfo layoutCI{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushRange
+    };
+
+    vkCheck(vkCreatePipelineLayout(ctx.device, &layoutCI, nullptr, &ctx.pipelineLayout));
+
+    // --- Dynamic states ---
+    VkDynamicState dynamics[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicCI{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = STATIC_LEN(dynamics),
+        .pDynamicStates = dynamics
+    };
+
+    // --- Fixed states ---
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    };
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    };
+
+    VkPipelineViewportStateCreateInfo viewportState{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1
+    };
+
+    VkPipelineRasterizationStateCreateInfo raster{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0f,
+    };
+
+    VkPipelineMultisampleStateCreateInfo msaa{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+    };
+
+    VkPipelineColorBlendAttachmentState blendAttachment{
+        .colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT |
+            VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT |
+            VK_COLOR_COMPONENT_A_BIT
+    };
+
+    VkPipelineColorBlendStateCreateInfo blend {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blendAttachment
+    };
+
+    VkPipelineRenderingCreateInfo renderingCI{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &ctx.swapchain.imageFormat
+    };
+
+    VkGraphicsPipelineCreateInfo pipelineCI{
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &renderingCI,
+        .stageCount = 2,
+        .pStages = stages,
+        .pVertexInputState = &vertexInput,
+        .pInputAssemblyState = &inputAssembly,
+        .pViewportState = &viewportState,
+        .pRasterizationState = &raster,
+        .pMultisampleState = &msaa,
+        .pColorBlendState = &blend,
+        .pDynamicState = &dynamicCI,
+        .layout = ctx.pipelineLayout
+    };
+
+    vkCheck(vkCreateGraphicsPipelines(ctx.device, VK_NULL_HANDLE, 1, &pipelineCI, nullptr, &ctx.pipeline));
+
 }
 
-static void destroyShaders(Context& ctx) {
+static void destroyGraphicsPipeline(Context& ctx) {
+    vkDestroyPipeline(ctx.device, ctx.pipeline, nullptr);
     vkDestroyPipelineLayout(ctx.device, ctx.pipelineLayout, nullptr);
-    for (Ulen i = 0; i < STATIC_LEN(ctx.shaders); i++) {
-        auto& shader = ctx.shaders[i];
-        vkDestroyShaderEXT(ctx.device, shader, nullptr);
-    }
 }
