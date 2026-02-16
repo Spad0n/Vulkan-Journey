@@ -3,15 +3,28 @@
 #include <vulkan/vulkan.h>
 #include <GLFW/glfw3.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include "ctl/allocator.hpp"
 #include "ctl/array.hpp"
+#include "ctl/file.hpp"
 #include "macro_utils.hpp"
 
 using namespace ctl;
 
 constexpr Ulen NUM_FRAMES_IN_FLIGHT = 2;
 constexpr Ulen NUM_SWAPCHAIN_IMAGES = 3;
+
+static Array<Uint8> loadFile(Allocator& allocator, StringView fileName) {
+    auto fd = File::open(fileName, File::Access::RD);
+    if (fd.is_valid()) {
+        defer(fd->close());
+        return fd->map(allocator);
+    } else {
+        fprintf(stderr, "Could not load file %.*s\n", (Sint32)fileName.length(), fileName.data());
+        exit(1);
+    }
+}
 
 #define vkCheck(result) check_location((result), __FILE__, __LINE__)
 static inline void check_location(Bool result, const char *filePath, Uint32 line) {
@@ -61,6 +74,7 @@ struct Context {
     Swapchain swapchain;
     PerFrameData perFrame[NUM_FRAMES_IN_FLIGHT];
     Uint8 frameIndex = 0;
+    VkShaderEXT shaders[2];
 };
 
 static void errorCallback(Sint32 error, const char* description) {
@@ -82,6 +96,62 @@ static void destroySwapchain(Context& ctx);
 static void createFrames(Context& ctx);
 
 static void destroyFrames(Context& ctx);
+
+static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc);
+
+static void destroyShaders(Context& ctx);
+
+static void render(Context& ctx, VkCommandBuffer cmd) {
+    VkShaderStageFlagBits shaderStages[2] = { VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT };
+    vkCmdBindShadersEXT(cmd, 2, shaderStages, ctx.shaders);
+
+    VkViewport viewport {
+        .width = (Float32)ctx.swapchain.width,
+        .height = (Float32)ctx.swapchain.height,
+        .minDepth = 0,
+        .maxDepth = 1,
+    };
+    vkCmdSetViewportWithCount(cmd, 1, &viewport);
+
+    VkRect2D rect2D {
+        .extent = {
+            .width = ctx.swapchain.width,
+            .height = ctx.swapchain.height,
+        }
+    };
+    vkCmdSetScissorWithCount(cmd, 1, &rect2D);
+
+    vkCmdSetRasterizerDiscardEnable(cmd, false);
+
+    vkCmdSetVertexInputEXT(cmd, 0, nullptr, 0, nullptr);
+    vkCmdSetPrimitiveTopology(cmd, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    vkCmdSetPrimitiveRestartEnable(cmd, false);
+
+    vkCmdSetRasterizationSamplesEXT(cmd, VK_SAMPLE_COUNT_1_BIT);
+    auto sampleMask = VkSampleMask(1);
+    vkCmdSetSampleMaskEXT(cmd, VK_SAMPLE_COUNT_1_BIT, &sampleMask);
+    vkCmdSetAlphaToCoverageEnableEXT(cmd, false);
+
+    vkCmdSetPolygonModeEXT(cmd, VK_POLYGON_MODE_FILL);
+    vkCmdSetCullMode(cmd, {});
+    vkCmdSetFrontFace(cmd, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+
+    vkCmdSetDepthTestEnable(cmd, false);
+    vkCmdSetDepthWriteEnable(cmd, false);
+    vkCmdSetDepthBiasEnable(cmd, false);
+
+    vkCmdSetStencilTestEnable(cmd, false);
+
+    Uint32 bfalse = 0;
+    vkCmdSetColorBlendEnableEXT(cmd, 0, 1, &bfalse);
+
+    VkColorComponentFlags colorMask {
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &colorMask);
+
+    vkCmdDraw(cmd, 3, 1, 0, 0);
+}
 
 Sint32 main() {
     SystemAllocator sys_alloc;
@@ -113,6 +183,9 @@ Sint32 main() {
 
     createSwapchain(ctx, temp_alloc);
     defer(destroySwapchain(ctx));
+
+    createShaders(ctx, temp_alloc);
+    defer(destroyShaders(ctx));
 
     createFrames(ctx);
     defer(destroyFrames(ctx));
@@ -187,6 +260,7 @@ Sint32 main() {
         vkCmdBeginRendering(cmd, &renderingInfo);
 
         // draw stuff
+        render(ctx, cmd);
 
         vkCmdEndRendering(cmd);
 
@@ -258,7 +332,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkDebugUtilsMessengerCallbackEXT(VkDebugUt
 
 static void createInstance(Context& ctx, TemporaryAllocator& temp_alloc) {
     const char* layers[] = {
-        "VK_LAYER_KHRONOS_validation"
+        "VK_LAYER_KHRONOS_validation",
+        "VK_LAYER_KHRONOS_shader_object",
     };
 
     Array<const char*> extensions(temp_alloc);
@@ -350,7 +425,8 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
     };
 
     const char* extensions[] = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_EXT_SHADER_OBJECT_EXTENSION_NAME,
     };
 
     VkPhysicalDeviceVulkan13Features vulkan13Features {
@@ -359,9 +435,15 @@ static void createDevice(Context& ctx, TemporaryAllocator& temp_alloc) {
         .dynamicRendering = true,
     };
 
+    VkPhysicalDeviceShaderObjectFeaturesEXT physicalDeviceFeatures {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+        .pNext = &vulkan13Features,
+        .shaderObject = true,
+    };
+
     VkDeviceCreateInfo deviceCI {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &vulkan13Features,
+        .pNext = &physicalDeviceFeatures,
         .queueCreateInfoCount = (Uint32)STATIC_LEN(queueCreateInfos),
         .pQueueCreateInfos = queueCreateInfos,
         .enabledExtensionCount = (Uint32)STATIC_LEN(extensions),
@@ -520,5 +602,40 @@ static void destroyFrames(Context& ctx) {
         vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
         vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
         vkDestroyFence(ctx.device, frame.fence, nullptr);
+    }
+}
+
+static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc) {
+    Array<Uint8> fragCode = loadFile(temp_alloc, "shaders/spv/shader.frag.spv");
+    Array<Uint8> vertCode = loadFile(temp_alloc, "shaders/spv/shader.vert.spv");
+
+    VkShaderCreateInfoEXT shaderCIS[2] {
+        {
+            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+            .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT ,
+            .stage = VK_SHADER_STAGE_VERTEX_BIT,
+            .nextStage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+            .codeSize = vertCode.length(),
+            .pCode = vertCode.data(),
+            .pName = "main",
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
+            .flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT ,
+            .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT,
+            .codeSize = fragCode.length(),
+            .pCode = fragCode.data(),
+            .pName = "main",
+        }
+    };
+    vkCheck(vkCreateShadersEXT(ctx.device, 2, shaderCIS, nullptr, ctx.shaders));
+}
+
+static void destroyShaders(Context& ctx) {
+    for (Ulen i = 0; i < STATIC_LEN(ctx.shaders); i++) {
+        auto& shader = ctx.shaders[i];
+        vkDestroyShaderEXT(ctx.device, shader, nullptr);
     }
 }
