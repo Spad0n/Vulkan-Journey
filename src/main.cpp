@@ -10,6 +10,9 @@
 
 using namespace ctl;
 
+constexpr Ulen NUM_FRAMES_IN_FLIGHT = 2;
+constexpr Ulen NUM_SWAPCHAIN_IMAGES = 3;
+
 #define vkCheck(result) check_location((result), __FILE__, __LINE__)
 static inline void check_location(Bool result, const char *filePath, Uint32 line) {
     // TODO: create cases on different error
@@ -18,11 +21,18 @@ static inline void check_location(Bool result, const char *filePath, Uint32 line
     }
 }
 
+struct PerFrameData {
+    VkFence fence;
+    VkSemaphore acquireSemaphore;
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
+};
+
 struct Swapchain {
     constexpr Swapchain(Allocator& allocator)
         : images{allocator}
         , imageViews{allocator}
-        , imageReadySemaphores{allocator}
+        , presentSemaphores{allocator}
     {}
 
     VkSwapchainKHR handle;
@@ -30,7 +40,7 @@ struct Swapchain {
     Uint32 height;
     Array<VkImage> images;
     Array<VkImageView> imageViews;
-    Array<VkSemaphore> imageReadySemaphores;
+    Array<VkSemaphore> presentSemaphores;
 };
 
 struct Context {
@@ -49,6 +59,8 @@ struct Context {
     VkDevice device;
     VkQueue queue;
     Swapchain swapchain;
+    PerFrameData perFrame[NUM_FRAMES_IN_FLIGHT];
+    Uint8 frameIndex = 0;
 };
 
 static void errorCallback(Sint32 error, const char* description) {
@@ -66,6 +78,10 @@ static void destroyDevice(Context& ctx);
 static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc);
 
 static void destroySwapchain(Context& ctx);
+
+static void createFrames(Context& ctx);
+
+static void destroyFrames(Context& ctx);
 
 Sint32 main() {
     SystemAllocator sys_alloc;
@@ -98,51 +114,25 @@ Sint32 main() {
     createSwapchain(ctx, temp_alloc);
     defer(destroySwapchain(ctx));
 
-    VkCommandPool commandPool{0};
-    VkCommandPoolCreateInfo commandPoolCI {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-        .queueFamilyIndex = ctx.queueFamilyIndex,
-    };
-    vkCheck(vkCreateCommandPool(ctx.device, &commandPoolCI, nullptr, &commandPool));
-    defer(vkDestroyCommandPool(ctx.device, commandPool, nullptr));
-
-    VkCommandBuffer cmd{0};
-    VkCommandBufferAllocateInfo commandBufferAI {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = commandPool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    vkCheck(vkAllocateCommandBuffers(ctx.device, &commandBufferAI, &cmd));
-
-    VkSemaphore acquireSemaphore{0};
-    VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-    vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &acquireSemaphore));
-    defer(vkDestroySemaphore(ctx.device, acquireSemaphore, nullptr));
-
-    VkFence frameFence{0};
-    VkFenceCreateInfo fenceCI {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-    };
-    vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frameFence));
-    defer(vkDestroyFence(ctx.device, frameFence, nullptr));
+    createFrames(ctx);
+    defer(destroyFrames(ctx));
 
     while (!glfwWindowShouldClose(ctx.window)) {
         temp_alloc.reset();
         glfwPollEvents();
 
-        vkCheck(vkWaitForFences(ctx.device, 1, &frameFence, true, UINT64_MAX));
-        vkCheck(vkResetFences(ctx.device, 1, &frameFence));
+        auto frame = ctx.perFrame[ctx.frameIndex];
+        vkCheck(vkWaitForFences(ctx.device, 1, &frame.fence, true, UINT64_MAX));
+        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
 
         Uint32 imageIndex{0};
         // TODO: handle SUBOPTIMAL_KHR and ERROR_OUT_OF_DATE_KHR
-        vkCheck(vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, acquireSemaphore, 0, &imageIndex));
+        vkCheck(vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, frame.acquireSemaphore, 0, &imageIndex));
 
-        auto releaseSemaphore = ctx.swapchain.imageReadySemaphores[imageIndex];
+        auto presentSemaphore = ctx.swapchain.presentSemaphores[imageIndex];
 
-        vkCheck(vkResetCommandPool(ctx.device, commandPool, {}));
+        vkCheck(vkResetCommandPool(ctx.device, frame.commandPool, {}));
+        auto cmd = frame.commandBuffer;
 
         VkCommandBufferBeginInfo beginInfo {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -228,25 +218,27 @@ Sint32 main() {
         VkSubmitInfo submitInfo {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &acquireSemaphore,
+            .pWaitSemaphores = &frame.acquireSemaphore,
             .pWaitDstStageMask = &waitStageFlags,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &releaseSemaphore,
+            .pSignalSemaphores = &presentSemaphore,
         };
-        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, frameFence));
+        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, frame.fence));
 
         VkPresentInfoKHR presentInfo {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &releaseSemaphore,
+            .pWaitSemaphores = &presentSemaphore,
             .swapchainCount = 1,
             .pSwapchains = &ctx.swapchain.handle,
             .pImageIndices = &imageIndex,
         };
         // TODO: handle SUBOPTIMAL_KHR and ERROR_OUT_OF_DATE_KHR
         vkCheck(vkQueuePresentKHR(ctx.queue, &presentInfo));
+
+        ctx.frameIndex = (ctx.frameIndex + 1) % NUM_FRAMES_IN_FLIGHT;
     }
 
     vkDeviceWaitIdle(ctx.device);
@@ -392,7 +384,7 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
     VkSurfaceCapabilitiesKHR surfaceCaps{0};
     vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice, ctx.surface, &surfaceCaps));
 
-    Uint32 imageCount = MAX(3, surfaceCaps.minImageCount);
+    Uint32 imageCount = MAX(NUM_SWAPCHAIN_IMAGES, surfaceCaps.minImageCount);
     if (surfaceCaps.maxImageCount != 0) {
         imageCount = MIN(imageCount, surfaceCaps.maxImageCount);
     }
@@ -473,22 +465,60 @@ static void createSwapchain(Context& ctx, TemporaryAllocator& temp_alloc) {
         vkCheck(vkCreateImageView(ctx.device, &imageCI, nullptr, &ctx.swapchain.imageViews[i]));
     }
 
-    ctx.swapchain.imageReadySemaphores.resize(imageCount);
+    ctx.swapchain.presentSemaphores.resize(imageCount);
 
     VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-    for (auto& semaphore : ctx.swapchain.imageReadySemaphores) {
+    for (auto& semaphore : ctx.swapchain.presentSemaphores) {
         vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &semaphore));
     }
 }
 
 static void destroySwapchain(Context& ctx) {
     ctx.swapchain.images.destroy();
-    for (auto& semaphore : ctx.swapchain.imageReadySemaphores) {
+    for (auto& semaphore : ctx.swapchain.presentSemaphores) {
         vkDestroySemaphore(ctx.device, semaphore, nullptr);
     }
-    ctx.swapchain.imageReadySemaphores.destroy();
+    ctx.swapchain.presentSemaphores.destroy();
     for (auto& imageView : ctx.swapchain.imageViews) {
         vkDestroyImageView(ctx.device, imageView, nullptr);
     }
     vkDestroySwapchainKHR(ctx.device, ctx.swapchain.handle, nullptr);
+}
+
+static void createFrames(Context& ctx) {
+    for (Ulen i = 0; i < STATIC_LEN(ctx.perFrame); i++) {
+        auto& frame = ctx.perFrame[i];
+        VkCommandPoolCreateInfo commandPoolCI {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+            .queueFamilyIndex = ctx.queueFamilyIndex,
+        };
+        vkCheck(vkCreateCommandPool(ctx.device, &commandPoolCI, nullptr, &frame.commandPool));
+
+        VkCommandBufferAllocateInfo commandBufferAI {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = frame.commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        vkCheck(vkAllocateCommandBuffers(ctx.device, &commandBufferAI, &frame.commandBuffer));
+
+        VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &frame.acquireSemaphore));
+
+        VkFenceCreateInfo fenceCI {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+        vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frame.fence));
+    }
+}
+
+static void destroyFrames(Context& ctx) {
+    for (Ulen i = 0; i < STATIC_LEN(ctx.perFrame); i++) {
+        auto& frame = ctx.perFrame[i];
+        vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
+        vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
+        vkDestroyFence(ctx.device, frame.fence, nullptr);
+    }
 }
