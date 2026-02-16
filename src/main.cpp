@@ -75,6 +75,7 @@ struct Context {
     PerFrameData perFrame[NUM_FRAMES_IN_FLIGHT];
     Uint8 frameIndex = 0;
     VkShaderEXT shaders[2];
+    VkPipelineLayout pipelineLayout;
 };
 
 static void errorCallback(Sint32 error, const char* description) {
@@ -149,6 +150,14 @@ static void render(Context& ctx, VkCommandBuffer cmd) {
         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
     };
     vkCmdSetColorWriteMaskEXT(cmd, 0, 1, &colorMask);
+
+    struct Push {
+        Float32 color[3];
+    };
+    auto push = Push {
+        .color { 0.0f, 0.5f, 0.0f }
+    };
+    vkCmdPushConstants(cmd, ctx.pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
 
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }
@@ -606,6 +615,19 @@ static void destroyFrames(Context& ctx) {
 }
 
 static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc) {
+    VkPushConstantRange pushConstantRanges[] = {
+        {
+            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            .size = 128,
+        }
+    };
+    VkPipelineLayoutCreateInfo pipelineLayoutCI {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
+        .pPushConstantRanges = pushConstantRanges,
+    };
+    vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.pipelineLayout));
+
     Array<Uint8> fragCode = loadFile(temp_alloc, "shaders/spv/shader.frag.spv");
     Array<Uint8> vertCode = loadFile(temp_alloc, "shaders/spv/shader.vert.spv");
 
@@ -619,6 +641,8 @@ static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc) {
             .codeSize = vertCode.length(),
             .pCode = vertCode.data(),
             .pName = "main",
+            .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
+            .pPushConstantRanges = pushConstantRanges,
         },
         {
             .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
@@ -628,12 +652,15 @@ static void createShaders(Context& ctx, TemporaryAllocator& temp_alloc) {
             .codeSize = fragCode.length(),
             .pCode = fragCode.data(),
             .pName = "main",
+            .pushConstantRangeCount = (Uint32)STATIC_LEN(pushConstantRanges),
+            .pPushConstantRanges = pushConstantRanges,
         }
     };
     vkCheck(vkCreateShadersEXT(ctx.device, 2, shaderCIS, nullptr, ctx.shaders));
 }
 
 static void destroyShaders(Context& ctx) {
+    vkDestroyPipelineLayout(ctx.device, ctx.pipelineLayout, nullptr);
     for (Ulen i = 0; i < STATIC_LEN(ctx.shaders); i++) {
         auto& shader = ctx.shaders[i];
         vkDestroyShaderEXT(ctx.device, shader, nullptr);
