@@ -26,12 +26,19 @@ static Array<Uint8> loadFile(Allocator& allocator, StringView fileName) {
     }
 }
 
+static const char* VkResultToString(VkResult result) {
+    switch (result) {
+        #define VK_RESULT(x) case x: return #x;
+        #include "vulkan_error.inl"
+        default: return "UNKNOWN_VK_RESULT";
+    }
+}
+
 #define vkCheck(result) check_location((result), __FILE__, __LINE__)
 static inline void check_location(VkResult result, const char *filePath, Uint32 line) {
-    // TODO: create cases on different error
     if (result != VK_SUCCESS) {
-        fprintf(stderr, "%s:%d:Vulkan failure: %d\n", filePath, line, result);
-        abort();
+        fprintf(stderr, "%s:%d:Vulkan failure: %s (%d)\n", filePath, line, VkResultToString(result), result);
+        exit(1);
     }
 }
 
@@ -558,6 +565,7 @@ static void destroySwapchain(Context& ctx) {
     for (auto& imageView : ctx.swapchain.imageViews) {
         vkDestroyImageView(ctx.device, imageView, nullptr);
     }
+    ctx.swapchain.imageViews.destroy();
     vkDestroySwapchainKHR(ctx.device, ctx.swapchain.handle, nullptr);
 }
 

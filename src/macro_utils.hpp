@@ -8,7 +8,7 @@
 template<typename F>
 struct privDefer {
     F f;
-    privDefer(F f) : f(f) {}
+    constexpr privDefer(F f) : f(f) {}
     ~privDefer() { f(); }
 };
 
