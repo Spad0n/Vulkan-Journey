@@ -10,7 +10,7 @@ if not exist %OUTPUT_DIR% (
 
 for %%f in (%INPUT_DIR%\*.vert %INPUT_DIR%\*.frag %INPUT_DIR%\*.comp) do (
     echo Compiling %%f ...
-    %GLSLC% %%f -o %OUTPUT_DIR%\%%~nf%%~xf.spv
+    %GLSLC% %%f --target-env=vulkan1.3 -o %OUTPUT_DIR%\%%~nf%%~xf.spv
 )
 
 echo Done.

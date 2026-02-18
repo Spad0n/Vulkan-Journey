@@ -38,6 +38,7 @@ add_subdirectory(external/volk-1.4.304 volk)
 
 add_executable(vulkanapp
   src/main.cpp
+  src/gpu.cpp
 )
 
 target_link_libraries(vulkanapp PRIVATE
