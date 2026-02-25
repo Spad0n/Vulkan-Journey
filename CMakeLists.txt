@@ -35,10 +35,13 @@ add_subdirectory(external/ctl)
 add_subdirectory(external/glm)
 add_subdirectory(external/glfw-3.4 glfw)
 add_subdirectory(external/volk-1.4.304 volk)
+add_subdirectory(external/VulkanMemoryAllocator-3.3.0 vma)
 
 add_executable(vulkanapp
   src/main.cpp
-  src/gpu.cpp
+  src/gpu/gpu.cpp
+  src/gpu/volk.cpp
+  src/gpu/vma.cpp
 )
 
 target_link_libraries(vulkanapp PRIVATE
@@ -47,5 +50,5 @@ target_link_libraries(vulkanapp PRIVATE
   glfw
   Vulkan::Vulkan
   volk
-  #GPUOpen::VulkanMemoryAllocator
+  GPUOpen::VulkanMemoryAllocator
 )
