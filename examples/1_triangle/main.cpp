@@ -5,7 +5,7 @@
 #include "macro_utils.hpp"
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
-#include "gpu/gpu.hpp"
+#include "gpu.hpp"
 
 using namespace ctl;
 
@@ -46,8 +46,8 @@ Sint32 main() {
 
     gpu::swapchainInit(temp_alloc, SCREEN_WIDTH, SCREEN_HEIGHT, 3);
 
-    gpu::ShaderHandle vs = gpu::shaderCreate(temp_alloc, "shaders/spv/shader.vert.spv");
-    gpu::ShaderHandle fs = gpu::shaderCreate(temp_alloc, "shaders/spv/shader.frag.spv");
+    gpu::ShaderHandle vs = gpu::shaderCreate(temp_alloc, "shaders/shader.vert.spv");
+    gpu::ShaderHandle fs = gpu::shaderCreate(temp_alloc, "shaders/shader.frag.spv");
     defer({
         gpu::shaderDestroy(vs);
         gpu::shaderDestroy(fs);
