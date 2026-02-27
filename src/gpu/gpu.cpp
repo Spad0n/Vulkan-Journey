@@ -537,7 +537,7 @@ namespace gpu {
         return shaderCreateInternal(shaderCode.slice());
     }
 
-    void shaderDestroy(ShaderHandle& shader) {
+    void shaderDestroy(ShaderHandle shader) {
         auto shaderInfo = ctx.shaders.get(shader);
         vkDestroyShaderModule(ctx.device, shaderInfo->shaderModule, nullptr);
         ctx.shaders.remove(shader);
@@ -768,7 +768,7 @@ namespace gpu {
         return ctx.graphicsPipelines.add(gpInfo).value();
     }
 
-    void graphicsPipelineDestroy(GraphicsPipelineHandle& pipeline) {
+    void graphicsPipelineDestroy(GraphicsPipelineHandle pipeline) {
         auto info = ctx.graphicsPipelines.get(pipeline);
         vkDestroyPipeline(ctx.device, info->handle, nullptr);
         ctx.graphicsPipelines.remove(pipeline);
@@ -1022,19 +1022,6 @@ namespace gpu {
         }
     }
 
-    void queueSubmit(CommandBufferHandle cmd) {
-        auto cbInfo = ctx.commandBuffers.get(cmd);
-
-        //...
-
-        VkSubmitInfo submitInfo {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            // ...
-        };
-
-        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, VK_NULL_HANDLE));
-    }
-
     void cmdBindGraphicsPipeline(CommandBufferHandle cmd, GraphicsPipelineHandle pipeline) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
         auto pInfo = ctx.graphicsPipelines.get(pipeline);
@@ -1120,8 +1107,28 @@ namespace gpu {
         vkCmdPipelineBarrier2(cbInfo->handle, &depInfo);
     }
 
-    void cmdDrawInstanced(CommandBufferHandle& cmd, Uint32 vertexCount, Uint32 instanceCount, Uint32 firstVertex, Uint32 firstInstance) {
-        auto cmdInfo = ctx.commandBuffers.get(cmd);
-        vkCmdDraw(cmdInfo->handle, vertexCount, instanceCount, firstVertex, firstInstance);
+    struct GraphicsPushConstants {
+        Uint64 vertexData;
+        Uint64 fragmentData;
+    };
+
+    void cmdDrawIndexedInstanced(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, Uint32 indexCount, Uint32 instanceCount) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        if (!cbInfo) return;
+
+        GraphicsPushConstants pc {
+            .vertexData = vertexData.is_valid() ? vertexData.gpu : 0,
+            .fragmentData = fragmentData.is_valid() ? fragmentData.gpu : 0,
+        };
+        vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GraphicsPushConstants), &pc);
+
+        VkBuffer idxBuffer;
+        VkDeviceSize idxOffset;
+        if (getBufferAndOffset(indices, idxBuffer, idxOffset)) {
+            vkCmdBindIndexBuffer(cbInfo->handle, idxBuffer, idxOffset, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cbInfo->handle, indexCount, instanceCount, 0, 0, 0);
+        } else {
+            vkCmdDraw(cbInfo->handle, indexCount, instanceCount, 0, 0);
+        }
     }
 }

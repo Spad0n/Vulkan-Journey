@@ -22,11 +22,6 @@ struct Vertex {
     glm::vec3 color;
 };
 
-struct DrawData {
-    glm::mat4 transform;
-    Uint64 vertsAddress;
-};
-
 Sint32 main() {
     SystemAllocator sys_alloc;
     TemporaryAllocator temp_alloc{sys_alloc};
@@ -95,16 +90,9 @@ Sint32 main() {
         gpu::Arena& frameArena = gpu::getFrameArena();
         frameArena.reset();
 
-        Float32 time = (Float32)glfwGetTime();
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), time, glm::vec3(0.0f, 0.0f, 1.0f));
-        Float32 aspect = (Float32)SCREEN_WIDTH / (Float32)SCREEN_HEIGHT;
-        glm::mat4 projection = glm::ortho(-aspect, aspect, -1.0f, 1.0f, -1.0f, 1.0f);
-
-        DrawData drawData;
-        drawData.transform = projection * model;
-        drawData.vertsAddress = vertsLocal.gpu;
 
         gpu::cmdBeginRendering(cmdBuf, LoadOp::Clear, StoreOp::Store, 0.1f, 0.1f, 0.1f, 1.0f);
+
         gpu::cmdSetViewportScissor(cmdBuf, SCREEN_WIDTH, SCREEN_HEIGHT);
 
         gpu::cmdBindGraphicsPipeline(cmdBuf, pipeline);
@@ -120,8 +108,13 @@ Sint32 main() {
 
         gpu::cmdSetRasterizerState(cmdBuf, CullMode::None, FrontFace::CounterClockwise, PrimitiveTopology::TriangleList);
 
-        gpu::cmdPushConstants(cmdBuf, &drawData, sizeof(DrawData));
-        gpu::cmdDrawInstanced(cmdBuf, 3, 1, 0, 0);
+        struct VertData {
+            Uint64 vertsAddress;
+        };
+        auto vertsData = frameArena.alloc<VertData>();
+        vertsData->vertsAddress = vertsLocal.gpu;
+
+        gpu::cmdDrawIndexedInstanced(cmdBuf, vertsData, gpu::RawPtr{}, gpu::RawPtr{}, 3, 1);
         gpu::cmdEndRendering(cmdBuf);
 
         gpu::endFrame(cmdBuf);

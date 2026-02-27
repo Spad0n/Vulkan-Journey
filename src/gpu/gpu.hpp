@@ -374,7 +374,7 @@ namespace gpu {
 
     ShaderHandle shaderCreate(TemporaryAllocator& temp_alloc, StringView filePath);
 
-    void shaderDestroy(ShaderHandle& shader);
+    void shaderDestroy(ShaderHandle shader);
 
     struct PipelineDesc {
         ShaderHandle vs;
@@ -387,7 +387,7 @@ namespace gpu {
 
     GraphicsPipelineHandle graphicsPipelineCreate(TemporaryAllocator& temp_alloc, PipelineDesc desc);
 
-    void graphicsPipelineDestroy(GraphicsPipelineHandle& pipeline);
+    void graphicsPipelineDestroy(GraphicsPipelineHandle pipeline);
 
     struct DepthState {
         DepthFlags mode;
@@ -444,7 +444,7 @@ namespace gpu {
 
     void cmdBarrier(CommandBufferHandle cmd, Stage before, Stage after, Hazard hazards = Hazard::None);
 
-    void cmdDrawInstanced(CommandBufferHandle& cmd, Uint32 vertexCount, Uint32 instanceCount, Uint32 firstVertex, Uint32 firstInstance);
+    void cmdDrawIndexedInstanced(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, Uint32 indexCount, Uint32 instanceCount);
 }
 
 #endif // GPU_HPP
