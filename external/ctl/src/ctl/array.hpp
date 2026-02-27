@@ -225,6 +225,9 @@ namespace ctl {
 	Array* destroy() {
             destruct();
             allocator_.deallocate(data_, capacity_);
+            data_ = nullptr;
+            length_ = 0;
+            capacity_ = 0;
             return this;
 	}
 

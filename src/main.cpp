@@ -4,29 +4,28 @@
 #include "ctl/allocator.hpp"
 #include "macro_utils.hpp"
 #include "glm/glm.hpp"
-#include "glm/gtc/constants.hpp"
+#include "glm/gtc/matrix_transform.hpp"
 #include "gpu/gpu.hpp"
 
 using namespace ctl;
 
 constexpr Uint32 SCREEN_WIDTH  = 800;
-constexpr Uint32 SCREEN_HEIGHT = 600;
+constexpr Uint32 SCREEN_HEIGHT = 800;
 constexpr Uint32 FramesInFlight = 3;
 
 static void errorCallback(Sint32 error, const char *description) {
     fprintf(stderr, "GLFW Error: %d %s\n", error, description);
 }
 
-glm::vec4 changingColor(Float32 deltaTime) {
-    static float t = 0.0f;
-    t = fmodf(t + deltaTime * 1.7f, glm::pi<float>() * 2.0f);
+struct Vertex {
+    glm::vec3 position;
+    glm::vec3 color;
+};
 
-    glm::vec4 colorA{ 0.2f, 0.2f, 0.2f, 1.0f };
-    glm::vec4 colorB{ 0.4f, 0.4f, 0.4f, 1.0f };
-    
-    float factor = sinf(t) * 0.5f + 0.5f;
-    return glm::mix(colorA, colorB, factor);
-}
+struct DrawData {
+    glm::mat4 transform;
+    Uint64 vertsAddress;
+};
 
 Sint32 main() {
     SystemAllocator sys_alloc;
@@ -40,358 +39,95 @@ Sint32 main() {
     if (!glfwVulkanSupported()) return 1;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window = glfwCreateWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Triangle (No Graphics API)", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "No graphics API", nullptr, nullptr);
     if (!window) return 1;
     defer(glfwDestroyWindow(window));
 
-    Sint32 windowSizeX = SCREEN_WIDTH;
-    Sint32 windowSizeY = SCREEN_HEIGHT;
-
     if (!gpu::init(temp_alloc, window)) {
-        fprintf(stderr, "Failed to init vulkan\n");
+        fprintf(stderr, "Failed to init Vulkan\n");
         return 1;
     }
     defer(gpu::shutdown());
 
-    gpu::swapchainInitFromGlfw(temp_alloc, window, FramesInFlight);
+    gpu::swapchainInit(temp_alloc, SCREEN_WIDTH, SCREEN_HEIGHT, 3);
 
-    auto vertShader = gpu::shaderCreate(temp_alloc, "shaders/spv/test.vert.spv");
-    auto fragShader = gpu::shaderCreate(temp_alloc, "shaders/spv/test.frag.spv");
-    defer(gpu::shaderDestroy(vertShader));
-    defer(gpu::shaderDestroy(fragShader));
+    gpu::ShaderHandle vs = gpu::shaderCreate(temp_alloc, "shaders/spv/shader.vert.spv");
+    gpu::ShaderHandle fs = gpu::shaderCreate(temp_alloc, "shaders/spv/shader.frag.spv");
+    defer({
+        gpu::shaderDestroy(vs);
+        gpu::shaderDestroy(fs);
+    });
 
-    // LE NOUVEAU PARADIGME : 
-    // Le Pipeline ne contient plus AUCUN état de rasterization ou de blend !
-    // Juste les shaders et le format d'image cible.
-    TextureFormat formats[] = { TextureFormat::BGRA8_Unorm };
-    gpu::PipelineDesc pipelineDesc {
-        .vs = vertShader,
-        .fs = fragShader,
-        .colorFormats = ctl::Slice<TextureFormat>{formats},
+    TextureFormat formats[] = { TextureFormat::BGRA8_SRGB };
+    gpu::PipelineDesc pDesc {
+        .vs = vs,
+        .fs = fs,
+        .colorFormats = formats,
         .depthFormat = TextureFormat::Default,
         .stencilFormat = TextureFormat::Default
     };
-    auto pipeline = gpu::graphicsPipelineCreate(temp_alloc, pipelineDesc);
+    gpu::GraphicsPipelineHandle pipeline = gpu::graphicsPipelineCreate(temp_alloc, pDesc);
     defer(gpu::graphicsPipelineDestroy(pipeline));
 
-    struct Vertex {
-        glm::vec4 pos;
-        glm::vec4 col;
-    };
-    
     auto initArena = gpu::Arena(sys_alloc);
     defer(initArena.destroy());
-    initArena.init();
 
     gpu::SlicePtr<Vertex> verts = initArena.alloc<Vertex>(3);
-    verts[0].pos = { -0.5f,  0.5f, 0.0f, 1.0f }; verts[0].col = { 1.0f, 0.0f, 0.0f, 1.0f };
-    verts[1].pos = {  0.0f, -0.5f, 0.0f, 1.0f }; verts[1].col = { 0.0f, 1.0f, 0.0f, 1.0f };
-    verts[2].pos = {  0.5f,  0.5f, 0.0f, 1.0f }; verts[2].col = { 0.0f, 0.0f, 1.0f, 1.0f };
-    
-    gpu::SlicePtr<Uint32> indices = initArena.alloc<Uint32>(3);
-    indices[0] = 0; indices[1] = 2; indices[2] = 1;
+    verts[0].position = { 0.0f, -0.5f, 0.0f }; verts[0].color = { 1.0f, 0.0f, 0.0f }; // Bas milieu, Rouge
+    verts[1].position = { 0.5f,  0.5f, 0.0f }; verts[1].color = { 0.0f, 1.0f, 0.0f }; // Haut droite, Vert
+    verts[2].position = {-0.5f,  0.5f, 0.0f }; verts[2].color = { 0.0f, 0.0f, 1.0f }; // Haut gauche, Bleu
 
     auto vertsLocal = gpu::memAlloc<Vertex>(3, Memory::GPU);
     defer(gpu::memFree(vertsLocal));
-    auto indicesLocal = gpu::memAlloc<Uint32>(3, Memory::GPU);
-    defer(gpu::memFree(indicesLocal));
 
-    auto uploadCmdBuffer = gpu::commandsBegin(Queue::Main);
+    auto uploadCmdBuffer = gpu::beginSingleTimeCommands();
     gpu::cmdMemCpy<Vertex>(uploadCmdBuffer, vertsLocal, verts, verts.length());
-    gpu::cmdMemCpy<Uint32>(uploadCmdBuffer, indicesLocal, indices, indices.length());
     gpu::cmdBarrier(uploadCmdBuffer, Stage::Transfer, Stage::All);
-    gpu::queueSubmit(Queue::Main, uploadCmdBuffer);
-    
-    double nowTs = glfwGetTime();
-    Float32 maxDeltaTime = 1.0f / 10.0f;
-
-    gpu::Arena frameArenas[FramesInFlight] = {
-        gpu::Arena(sys_alloc), gpu::Arena(sys_alloc), gpu::Arena(sys_alloc)
-    };
-    for (Ulen i = 0; i < STATIC_LEN(frameArenas); i++) {
-        frameArenas[i].init(4 * 1024 * 1024);
-    }
-    defer({
-        for (Ulen i = 0; i < STATIC_LEN(frameArenas); i++) frameArenas[i].destroy();
-    });
-
-    Uint64 nextFrame = 1;
-    auto frameSem = gpu::semaphoreCreate(0);
-    defer(gpu::semaphoreDestroy(frameSem));
-
+    gpu::endSingleTimeCommands(uploadCmdBuffer);
+        
     while (!glfwWindowShouldClose(window)) {
         temp_alloc.reset();
         glfwPollEvents();
 
-        Sint32 oldWindowSizeX = windowSizeX;
-        Sint32 oldWindowSizeY = windowSizeY;
-        glfwGetFramebufferSize(window, &windowSizeX, &windowSizeY);
+        gpu::CommandBufferHandle cmdBuf = gpu::beginFrame();
+        if (!cmdBuf.is_valid()) continue;
 
-        if (windowSizeX <= 0 || windowSizeY <= 0) {
-            glfwWaitEventsTimeout(0.016);
-            continue;
-        }
-
-        if (nextFrame > FramesInFlight) {
-            gpu::semaphoreWait(frameSem, nextFrame - FramesInFlight);
-        }
-
-        if (oldWindowSizeX != windowSizeX || oldWindowSizeY != windowSizeY) {
-            gpu::swapchainResize(temp_alloc, windowSizeX, windowSizeY);
-        }
-
-        auto swapchainTex = gpu::swapchainAcquireNext();
-
-        double lastTs = nowTs;
-        nowTs = glfwGetTime();
-        Float32 deltaTime = glm::min(maxDeltaTime, static_cast<Float32>(nowTs - lastTs));
-
-        auto& frameArena = frameArenas[nextFrame % FramesInFlight];
+        gpu::Arena& frameArena = gpu::getFrameArena();
         frameArena.reset();
 
-        auto cmdBuf = gpu::commandsBegin(Queue::Main);
+        Float32 time = (Float32)glfwGetTime();
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), time, glm::vec3(0.0f, 0.0f, 1.0f));
+        Float32 aspect = (Float32)SCREEN_WIDTH / (Float32)SCREEN_HEIGHT;
+        glm::mat4 projection = glm::ortho(-aspect, aspect, -1.0f, 1.0f, -1.0f, 1.0f);
 
-        glm::vec4 color = changingColor(deltaTime);
+        DrawData drawData;
+        drawData.transform = projection * model;
+        drawData.vertsAddress = vertsLocal.gpu;
 
-        gpu::RenderAttachment colorAtt;
-        colorAtt.texture = swapchainTex;
-        colorAtt.loadOp = LoadOp::Clear;
-        colorAtt.storeOp = StoreOp::Store;
-        colorAtt.clearColor[0] = color.r;
-        colorAtt.clearColor[1] = color.g;
-        colorAtt.clearColor[2] = color.b;
-        colorAtt.clearColor[3] = color.a;
+        gpu::cmdBeginRendering(cmdBuf, LoadOp::Clear, StoreOp::Store, 0.1f, 0.1f, 0.1f, 1.0f);
+        gpu::cmdSetViewportScissor(cmdBuf, SCREEN_WIDTH, SCREEN_HEIGHT);
 
-        gpu::RenderPassDesc renderPassDesc {
-            .colorAttachments = Slice<gpu::RenderAttachment>(&colorAtt, 1),
-            .renderArea = { swapchainTex.width, swapchainTex.height }
-        };
-
-        gpu::cmdBeginRenderPass(cmdBuf, renderPassDesc);
         gpu::cmdBindGraphicsPipeline(cmdBuf, pipeline);
 
-        // --- NOUVEAU PARADIGME ---
-        // On configure les états de Culling, Topology et Blending DYNAMIQUEMENT !
-        
+        gpu::BlendState blend{};
+        blend.enable = false; // Désactivé pour l'instant
+        blend.colorWriteMask = 0xF; // RGBA
+        gpu::cmdSetBlendState(cmdBuf, blend);
+
+        gpu::DepthState depth{};
+        depth.mode = DepthFlags::None;
+        gpu::cmdSetDepthState(cmdBuf, depth);
+
         gpu::cmdSetRasterizerState(cmdBuf, CullMode::None, FrontFace::CounterClockwise, PrimitiveTopology::TriangleList);
-        
-        gpu::BlendState blendState {
-            .enable = false,
-            // Même si désactivé, on passe un write mask valide (très important !)
-            .colorWriteMask = 0b1111 // Ecriture RGBA (R=1, G=2, B=4, A=8 => 15)
-        };
-        gpu::cmdSetBlendState(cmdBuf, blendState);
 
-        gpu::DepthState depthState {
-            .mode = DepthFlags::None,
-            .compare = CompareOp::Always
-        };
-        gpu::cmdSetDepthState(cmdBuf, depthState);
+        gpu::cmdPushConstants(cmdBuf, &drawData, sizeof(DrawData));
+        gpu::cmdDrawInstanced(cmdBuf, 3, 1, 0, 0);
+        gpu::cmdEndRendering(cmdBuf);
 
-        // --- FIN DU NOUVEAU PARADIGME ---
-
-        struct VertData {
-            Uint64 vertsAddress; 
-        };
-        auto vertsData = frameArena.alloc<VertData>();
-        vertsData->vertsAddress = vertsLocal.gpu; 
-
-        gpu::cmdDrawIndexedInstanced(cmdBuf, vertsData, gpu::RawPtr{}, indicesLocal, 3, 1);
-
-        gpu::cmdEndRenderPass(cmdBuf);
-
-        gpu::cmdAddSignalSemaphore(cmdBuf, frameSem, nextFrame);
-        gpu::queueSubmit(Queue::Main, cmdBuf);
-        gpu::swapchainPresent(Queue::Main, frameSem, nextFrame);
-        
-        nextFrame++;
+        gpu::endFrame(cmdBuf);
     }
 
     gpu::waitIdle();
+
     return 0;
 }
-
-//#include <GLFW/glfw3.h>
-//#include <stdio.h>
-//#include <math.h>
-//#include "ctl/allocator.hpp"
-//#include "macro_utils.hpp"
-//#include "glm/glm.hpp"
-//#include "glm/gtc/constants.hpp"
-//#include "gpu/gpu.hpp"
-//
-//using namespace ctl;
-//
-//constexpr Uint32 SCREEN_WIDTH  = 800;
-//constexpr Uint32 SCREEN_HEIGHT = 600;
-//constexpr Uint32 FramesInFlight = 3;
-//
-//static void errorCallback(Sint32 error, const char *description) {
-//    fprintf(stderr, "GLFW Error: %d %s\n", error, description);
-//}
-//
-//glm::vec4 changingColor(Float32 deltaTime) {
-//    static float t = 0.0f;
-//    t = fmodf(t + deltaTime * 1.7f, glm::pi<float>() * 2.0f);
-//
-//    glm::vec4 colorA{ 0.2f, 0.2f, 0.2f, 1.0f };
-//    glm::vec4 colorB{ 0.4f, 0.4f, 0.4f, 1.0f };
-//    
-//    float factor = sinf(t) * 0.5f + 0.5f;
-//    return glm::mix(colorA, colorB, factor);
-//}
-//
-//Sint32 main() {
-//    SystemAllocator sys_alloc;
-//    TemporaryAllocator temp_alloc{sys_alloc};
-//
-//    glfwSetErrorCallback(errorCallback);
-//
-//    if (!glfwInit()) return 1;
-//    defer(glfwTerminate());
-//
-//    if (!glfwVulkanSupported()) return 1;
-//
-//    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-//    GLFWwindow *window = glfwCreateWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Triangle (No Graphics API)", nullptr, nullptr);
-//    if (!window) return 1;
-//    defer(glfwDestroyWindow(window));
-//
-//    Sint32 windowSizeX = SCREEN_WIDTH;
-//    Sint32 windowSizeY = SCREEN_HEIGHT;
-//
-//    if (!gpu::init(temp_alloc, window)) {
-//        fprintf(stderr, "Failed to init vulkan\n");
-//        return 1;
-//    }
-//    defer(gpu::shutdown());
-//
-//    gpu::swapchainInitFromGlfw(temp_alloc, window, FramesInFlight);
-//
-//    auto vertShader = gpu::shaderCreate(temp_alloc, "shaders/spv/test.vert.spv");
-//    auto fragShader = gpu::shaderCreate(temp_alloc, "shaders/spv/test.frag.spv");
-//    defer(gpu::shaderDestroy(vertShader));
-//    defer(gpu::shaderDestroy(fragShader));
-//
-//    TextureFormat formats[] = { TextureFormat::BGRA8_Unorm };
-//    gpu::PipelineDesc pipelineDesc {
-//        .vs = vertShader,
-//        .fs = fragShader,
-//        .colorFormats = ctl::Slice<TextureFormat>{formats},
-//        .topology = PrimitiveTopology::TriangleList,
-//    };
-//    auto pipeline = gpu::graphicsPipelineCreate(temp_alloc, pipelineDesc);
-//    defer(gpu::graphicsPipelineDestroy(pipeline));
-//
-//    struct Vertex {
-//        glm::vec4 pos;
-//        glm::vec4 col;
-//    };
-//    
-//    auto initArena = gpu::Arena(sys_alloc);
-//    defer(initArena.destroy());
-//    initArena.init();
-//
-//    gpu::SlicePtr<Vertex> verts = initArena.alloc<Vertex>(3);
-//    verts[0].pos = { -0.5f,  0.5f, 0.0f, 1.0f }; verts[0].col = { 1.0f, 0.0f, 0.0f, 1.0f };
-//    verts[1].pos = {  0.0f, -0.5f, 0.0f, 1.0f }; verts[1].col = { 0.0f, 1.0f, 0.0f, 1.0f };
-//    verts[2].pos = {  0.5f,  0.5f, 0.0f, 1.0f }; verts[2].col = { 0.0f, 0.0f, 1.0f, 1.0f };
-//    
-//    gpu::SlicePtr<Uint32> indices = initArena.alloc<Uint32>(3);
-//    indices[0] = 0; indices[1] = 2; indices[2] = 1;
-//
-//    auto vertsLocal = gpu::memAlloc<Vertex>(3, Memory::GPU);
-//    defer(gpu::memFree(vertsLocal));
-//    auto indicesLocal = gpu::memAlloc<Uint32>(3, Memory::GPU);
-//    defer(gpu::memFree(indicesLocal));
-//
-//    auto uploadCmdBuffer = gpu::commandsBegin(Queue::Main);
-//    gpu::cmdMemCpy<Vertex>(uploadCmdBuffer, vertsLocal, verts, verts.length());
-//    gpu::cmdMemCpy<Uint32>(uploadCmdBuffer, indicesLocal, indices, indices.length());
-//    gpu::cmdBarrier(uploadCmdBuffer, Stage::Transfer, Stage::All);
-//    gpu::queueSubmit(Queue::Main, uploadCmdBuffer);
-//    
-//    double nowTs = glfwGetTime();
-//    Float32 maxDeltaTime = 1.0f / 10.0f;
-//
-//    gpu::Arena frameArenas[FramesInFlight] = {
-//        gpu::Arena(sys_alloc), gpu::Arena(sys_alloc), gpu::Arena(sys_alloc)
-//    };
-//    for (Ulen i = 0; i < STATIC_LEN(frameArenas); i++) {
-//        frameArenas[i].init(4 * 1024 * 1024);
-//    }
-//    defer({
-//        for (Ulen i = 0; i < STATIC_LEN(frameArenas); i++) frameArenas[i].destroy();
-//    });
-//
-//    Uint64 nextFrame = 1;
-//    auto frameSem = gpu::semaphoreCreate(0);
-//    defer(gpu::semaphoreDestroy(frameSem));
-//
-//    while (!glfwWindowShouldClose(window)) {
-//        temp_alloc.reset();
-//        glfwPollEvents();
-//
-//        Sint32 oldWindowSizeX = windowSizeX;
-//        Sint32 oldWindowSizeY = windowSizeY;
-//        glfwGetFramebufferSize(window, &windowSizeX, &windowSizeY);
-//
-//        if (windowSizeX <= 0 || windowSizeY <= 0) {
-//            glfwWaitEventsTimeout(0.016);
-//            continue;
-//        }
-//
-//        if (nextFrame > FramesInFlight) {
-//            gpu::semaphoreWait(frameSem, nextFrame - FramesInFlight);
-//        }
-//
-//        auto swapchainTex = gpu::swapchainAcquireNext();
-//
-//        double lastTs = nowTs;
-//        nowTs = glfwGetTime();
-//        Float32 deltaTime = glm::min(maxDeltaTime, static_cast<Float32>(nowTs - lastTs));
-//
-//        auto& frameArena = frameArenas[nextFrame % FramesInFlight];
-//        frameArena.reset();
-//
-//        auto cmdBuf = gpu::commandsBegin(Queue::Main);
-//
-//        glm::vec4 color = changingColor(deltaTime);
-//
-//        gpu::RenderAttachment colorAtt;
-//        colorAtt.texture = swapchainTex;
-//        colorAtt.loadOp = LoadOp::Clear;
-//        colorAtt.storeOp = StoreOp::Store;
-//        colorAtt.clearColor[0] = color.r;
-//        colorAtt.clearColor[1] = color.g;
-//        colorAtt.clearColor[2] = color.b;
-//        colorAtt.clearColor[3] = color.a;
-//
-//        gpu::RenderPassDesc renderPassDesc {
-//            .colorAttachments = Slice<gpu::RenderAttachment>(&colorAtt, 1),
-//            .renderArea = { swapchainTex.width, swapchainTex.height }
-//        };
-//
-//        gpu::cmdBeginRenderPass(cmdBuf, renderPassDesc);
-//        gpu::cmdBindGraphicsPipeline(cmdBuf, pipeline);
-//
-//        struct VertData {
-//            Uint64 vertsAddress; 
-//        };
-//        auto vertsData = frameArena.alloc<VertData>();
-//        vertsData->vertsAddress = vertsLocal.gpu; 
-//
-//        gpu::cmdDrawIndexedInstanced(cmdBuf, vertsData, gpu::RawPtr{}, indicesLocal, 3, 1);
-//
-//        gpu::cmdEndRenderPass(cmdBuf);
-//
-//        gpu::cmdAddSignalSemaphore(cmdBuf, frameSem, nextFrame);
-//        gpu::queueSubmit(Queue::Main, cmdBuf);
-//        gpu::swapchainPresent(Queue::Main, frameSem, nextFrame);
-//        
-//        nextFrame++;
-//    }
-//
-//    gpu::waitIdle();
-//    return 0;
-//}

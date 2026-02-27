@@ -1,32 +1,20 @@
 #ifndef GPU_HPP
 #define GPU_HPP
+
 #include <vulkan/vulkan.h>
-#include <GLFW/glfw3.h>
-#include "ctl/allocator.hpp"
-#include "ctl/types.hpp"
-#include "ctl/string.hpp"
-#include "ctl/array.hpp"
+#include "vk_mem_alloc.h"
 #include "ctl/slab.hpp"
+#include "ctl/array.hpp"
+#include "ctl/string.hpp"
 
 using namespace ctl;
-
-enum class Memory {
-    Default = 0,
-    GPU,
-    Readback
-};
-
-enum class TextureType {
-    D1,
-    D2,
-    D3,
-};
 
 enum class TextureFormat {
     Default = 0,
     RGBA8_Unorm,
     BGRA8_Unorm,
     RGBA8_SRGB,
+    BGRA8_SRGB,
     D32_Float,
     RGBA16_Float,
     RGBA32_Float,
@@ -40,14 +28,27 @@ enum class TextureFormat {
     EAC_RG11_Unorm,
 };
 
-enum class DepthFlags {
-    None  = 0,
-    Read  = 1 << 0,
-    Write = 1 << 1,
+enum class AllocationType {
+    Default,
+    Descriptor,
 };
 
-inline DepthFlags operator|(DepthFlags a, DepthFlags b) { return static_cast<DepthFlags>(static_cast<Uint32>(a) | static_cast<Uint32>(b)); }
-inline Bool operator&(DepthFlags a, DepthFlags b) { return static_cast<Uint32>(a) & static_cast<Uint32>(b); }
+enum class Memory {
+    Default = 0,
+    GPU,
+    Readback
+};
+
+enum class LoadOp {
+    Clear,
+    Load,
+    DontCare
+};
+
+enum class StoreOp {
+    Store,
+    DontCare
+};
 
 enum class BlendOp {
     Add,
@@ -65,6 +66,15 @@ enum class BlendFactor {
     SrcAlpha
 };
 
+enum class DepthFlags {
+    None  = 0,
+    Read  = 1 << 0,
+    Write = 1 << 1,
+};
+
+inline DepthFlags operator|(DepthFlags a, DepthFlags b) { return static_cast<DepthFlags>(static_cast<Uint32>(a) | static_cast<Uint32>(b)); }
+inline Bool operator&(DepthFlags a, DepthFlags b) { return static_cast<Uint32>(a) & static_cast<Uint32>(b); }
+
 enum class CompareOp {
     Never = 0,
     Less,
@@ -74,14 +84,6 @@ enum class CompareOp {
     NotEqual,
     GreaterEqual,
     Always
-};
-
-enum class PrimitiveTopology {
-    TriangleList  = 0,
-    TriangleStrip = 1,
-    LineList      = 2,
-    LineStrip     = 3,
-    PointList     = 4,
 };
 
 enum class CullMode {
@@ -96,15 +98,12 @@ enum class FrontFace{
     Clockwise
 };
 
-enum class AllocationType {
-    Default,
-    Descriptor,
-};
-
-enum class Queue {
-    Main = 0,
-    Compute,
-    Transfer,
+enum class PrimitiveTopology {
+    TriangleList  = 0,
+    TriangleStrip = 1,
+    LineList      = 2,
+    LineStrip     = 3,
+    PointList     = 4,
 };
 
 enum class Stage {
@@ -126,73 +125,72 @@ enum class Hazard {
 };
 
 inline Hazard operator|(Hazard a, Hazard b) { return static_cast<Hazard>(static_cast<Uint32>(a) | static_cast<Uint32>(b)); }
-
 inline Bool operator&(Hazard a, Hazard b) { return static_cast<Uint32>(a) & static_cast<Uint32>(b); }
 
-enum class LoadOp {
-    Clear,
-    Load,
-    DontCare
-};
-
-enum class StoreOp {
-    Store,
-    DontCare
-};
-
 namespace gpu {
+    struct Swapchain {
+        constexpr Swapchain(Allocator& allocator)
+            : images{allocator}
+            , imageViews{allocator}
+            , presentSemaphores{allocator}
+        {}
+
+        Array<VkImage> images;
+        Array<VkImageView> imageViews;
+        Array<VkSemaphore> presentSemaphores;
+        VkSwapchainKHR handle;
+        VkFormat imageFormat;
+        Uint32 width;
+        Uint32 height;
+    };
 
     template<typename Tag>
     struct Handle {
         Uint32 index = ~0_u32;
         Uint32 generation = 0;
 
-        constexpr Bool is_valid() { return index != ~0_u32; }
+        [[nodiscard]] constexpr Bool is_valid() { return index != ~0_u32; }
         constexpr Bool operator==(const Handle& other) {
             return index == other.index && generation == other.generation;
         }
+        constexpr Bool operator!=(const Handle& other) {
+            return !(*this == other);
+        }
     };
 
-    struct TextureTag {};
-    struct ShaderTag {};
-    struct PipelineTag {};
     struct AllocTag {};
     struct CommandBufferTag {};
-    struct SemaphoreTag {};
+    struct GraphicsPipelineTag {};
+    struct ShaderTag {};
 
-    using TextureHandle = Handle<TextureTag>;
-    using ShaderHandle = Handle<ShaderTag>;
-    using PipelineHandle = Handle<PipelineTag>;
     using AllocHandle = Handle<AllocTag>;
-    using CommandBuffer = Handle<CommandBufferTag>;
-    using SemaphoreHandle = Handle<SemaphoreTag>;
+    using CommandBufferHandle = Handle<CommandBufferTag>;
+    using GraphicsPipelineHandle = Handle<GraphicsPipelineTag>;
+    using ShaderHandle = Handle<ShaderTag>;
 
     template<typename T, typename Tag>
     struct ResourcePool {
-    private:
-        struct Slot {
-            T data;
-            Uint32 generation;
-        };
-        Slab slab_;
-
-    public:
         constexpr ResourcePool(Allocator& allocator, Ulen chunkCapacity = 256)
-            : slab_{allocator, sizeof(Slot), chunkCapacity}
+            : slab_{allocator, sizeof(T), chunkCapacity}
+            , generations_{allocator}
         {}
 
         template<typename U>
         Maybe<Handle<Tag>> add(U&& item) {
             if (auto ref = slab_.allocate()) {
-                Slot *slot = reinterpret_cast<Slot*>(slab_[*ref]);
+                if (ref->index >= generations_.length()) {
+                    generations_.resize(ref->index + 1);
+                }
+                if (generations_[ref->index] == 0) {
+                    generations_[ref->index] = 1;
+                }
 
-                new (&slot->data, Nat{}) T{forward<U>(item)};
+                T* dataPtr = reinterpret_cast<T*>(slab_[*ref]);
+                new (dataPtr, Nat{}) T{forward<U>(item)};
 
-                if (slot->generation == 0) slot->generation = 1;
-
-                return Handle<Tag>{
+                return Handle<Tag> {
                     ref->index,
-                    slot->generation
+                    generations_[ref->index],
                 };
             }
             return {};
@@ -200,98 +198,42 @@ namespace gpu {
 
         T* get(Handle<Tag> handle) {
             if (!handle.is_valid()) return nullptr;
+            if (handle.index >= generations_.length()) return nullptr;
+            if (generations_[handle.index] != handle.generation) return nullptr;
 
             SlabRef ref {handle.index};
-            Slot *slot = reinterpret_cast<Slot*>(slab_[ref]);
+            return reinterpret_cast<T*>(slab_[ref]);
+        }
 
-            if (slot->generation != handle.generation) {
-                return nullptr;
-            }
+        const T* get(Handle<Tag> handle) const {
+            if (!handle.is_valid()) return nullptr;
+            if (handle.index >= generations_.length()) return nullptr;
+            if (generations_[handle.index] != handle.generation) return nullptr;
 
-            return &slot->data;
+            SlabRef ref {handle.index};
+            return reinterpret_cast<const T*>(slab_[ref]);
         }
 
         void remove(Handle<Tag> handle) {
             if (!handle.is_valid()) return;
+            if (handle.index >= generations_.length()) return;
 
-            SlabRef ref{ handle.index };
-            Slot *slot = reinterpret_cast<Slot*>(slab_[ref]);
+            if (generations_[handle.index] == handle.generation) {
+                SlabRef ref{handle.index};
+                T* dataPtr = reinterpret_cast<T*>(slab_[ref]);
 
-            if (slot->generation == handle.generation) {
                 if constexpr(!TriviallyDestructible<T>) {
-                    slot->data.~T();
+                    dataPtr->~T();
                 }
 
-                slot->generation += 1;
+                generations_[handle.index] += 1;
 
                 slab_.deallocate(ref);
             }
         }
-    };
-
-    struct BlendState {
-        Bool enable;
-        BlendOp colorOp;
-        BlendFactor srcColorFactor;
-        BlendFactor dstColorFactor;
-        BlendOp alphaOp;
-        BlendFactor srcAlphaFactor;
-        BlendFactor dstAlphaFactor;
-        Uint8 colorWriteMask;
-    };
-
-    struct DepthState {
-        DepthFlags mode;
-        CompareOp compare;
-    };
-
-    struct PipelineDesc {
-        ShaderHandle vs;
-        ShaderHandle fs;
-
-        Slice<TextureFormat> colorFormats;
-        TextureFormat depthFormat = TextureFormat::Default;
-        TextureFormat stencilFormat = TextureFormat::Default;
-    };
-    //struct PipelineDesc {
-    //    ShaderHandle vs;
-    //    ShaderHandle fs;
-
-    //    Slice<TextureFormat> colorFormats;
-    //    TextureFormat depthFormat;
-    //    TextureFormat stencilFormat;
-
-    //    BlendState blendState;
-    //    DepthState depthState;
-
-    //    PrimitiveTopology topology;
-
-    //    CullMode cullMode;
-    //    FrontFace frontFace;
-    //};
-
-    struct SwapchainFrameData {
-        VkCommandPool commandPool;
-        VkCommandBuffer transitionCmd;
-    };
-
-    struct Swapchain {
-        constexpr Swapchain(SystemAllocator& allocator)
-            : images{allocator}
-            , imageViews{allocator}
-            , presentSemaphores{allocator}
-            , textureHandles{allocator}
-        {}
-
-        VkSwapchainKHR handle = VK_NULL_HANDLE;
-        Uint32 width;
-        Uint32 height;
-        Uint32 currentImageIndex;
-        VkFormat imageFormat = VK_FORMAT_UNDEFINED;
-        Array<VkImage> images;
-        Array<VkImageView> imageViews;
-        Array<VkSemaphore> presentSemaphores;
-        Array<TextureHandle> textureHandles;
+    private:
+        Slab slab_;
+        Array<Uint32> generations_;
     };
 
     struct RawPtr {
@@ -312,14 +254,14 @@ namespace gpu {
         constexpr Bool is_valid() const { return cpu != nullptr && gpu != 0; }
         constexpr operator Bool() const { return is_valid(); }
         constexpr operator RawPtr() const { return { static_cast<void*>(cpu), gpu, handle }; }
-        
+
         T* operator->() const { return cpu; }
         T& operator*() const { return *cpu; }
     };
 
     template<typename T>
     struct SlicePtr {
-        ctl::Slice<T> cpu;
+        Slice<T> cpu;
         Uint64 gpu = 0;
         AllocHandle handle;
 
@@ -333,11 +275,10 @@ namespace gpu {
     };
 
     struct Arena {
-        constexpr Arena(Allocator& allocator)
+        constexpr Arena(Allocator& allocator, Uint64 blockSize = 16 * 1024 * 1024)
             : blocks_{allocator}
+            , blockSize_{blockSize}
         {}
-
-        void init(Uint64 blockSize = 16 * 1024 * 1024, Memory memType = Memory::Default);
 
         void destroy();
 
@@ -346,7 +287,7 @@ namespace gpu {
         RawPtr allocRaw(Uint64 size, Uint64 count, Uint64 alignment = 16);
 
         template<typename T>
-        Ptr<T> alloc(void) {
+        Ptr<T> alloc() {
             RawPtr raw = allocRaw(sizeof(T), 1, alignof(T));
             return { static_cast<T*>(raw.cpu), raw.gpu, raw.handle };
         }
@@ -356,7 +297,6 @@ namespace gpu {
             RawPtr raw = allocRaw(sizeof(T), count, alignof(T));
             return { Slice<T>(static_cast<T*>(raw.cpu), count), raw.gpu, raw.handle };
         }
-
     private:
         struct Block {
             RawPtr ptr;
@@ -372,53 +312,20 @@ namespace gpu {
         Memory memType_ = Memory::Default;
     };
 
-    struct Texture {
-        Uint32 width;
-        Uint32 height;
-        VkFormat format;
-        VkImage image;
-        VkImageView view;
-    };
-
     struct RenderAttachment {
-        Texture texture;
         LoadOp loadOp = LoadOp::Clear;
         StoreOp storeOp = StoreOp::Store;
         Float32 clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
     struct RenderPassDesc {
-        ctl::Slice<RenderAttachment> colorAttachments;
+        Slice<RenderAttachment> colorAttachment;
         Uint32 renderArea[2];
     };
 
-    [[nodiscard]] Bool init(TemporaryAllocator& temp_alloc, GLFWwindow *window);
-
-    void shutdown();
-
-    Swapchain createSwapchain(Uint32 width, Uint32 height, Uint32 framesInFlight);
-
-    void destroySwapchain(Swapchain& swapchain);
-
-    void recreateSwapchain(Uint32 width, Uint32 height);
-
-    void swapchainInit(VkSurfaceKHR surfafce, Uint32 width, Uint32 height, Uint32);
-
-    void swapchainResize(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height);
-
-    void swapchainInitFromGlfw(TemporaryAllocator& temp_alloc, GLFWwindow *window, Uint32 frameInFlight);
-
-    [[nodiscard]] ShaderHandle shaderCreate(TemporaryAllocator& temp_alloc, StringView filePath);
-
-    void shaderDestroy(ShaderHandle shader);
-
-    PipelineHandle graphicsPipelineCreate(TemporaryAllocator& temp_alloc, PipelineDesc desc);
-
-    void graphicsPipelineDestroy(PipelineHandle pipeline);
-
     RawPtr memAllocRaw(Uint64 elSize, Uint64 elCount, Uint64 align, Memory memType = Memory::Default, AllocationType allocType = AllocationType::Default);
 
-    void memFreeRaw(RawPtr ptr);
+    void memFreeRaw(RawPtr& ptr);
 
     template<typename T>
     Ptr<T> memAlloc(Memory memType = Memory::Default, AllocationType allocType = AllocationType::Default) {
@@ -434,7 +341,7 @@ namespace gpu {
     SlicePtr<T> memAlloc(Uint64 count, Memory memType = Memory::Default, AllocationType allocType = AllocationType::Default) {
         RawPtr raw = memAllocRaw(sizeof(T), count, alignof(T), memType, allocType);
         return {
-            .cpu = Slice<T>(static_cast<T*>(raw.cpu), count),
+            .cpu = Slice(static_cast<T*>(raw.cpu), count),
             .gpu = raw.gpu,
             .handle = raw.handle,
         };
@@ -443,54 +350,101 @@ namespace gpu {
     template<typename T>
     void memFree(Ptr<T> addr) {
         if (!addr.is_valid()) return;
-        RawPtr raw {addr.cpu, addr.gpu, addr.handle};
-        memFreeRaw(raw);
+        memFreeRaw(addr);
     }
 
     template<typename T>
     void memFree(SlicePtr<T> addr) {
         if (!addr.is_valid()) return;
-        RawPtr raw {addr.cpu.data(), addr.gpu, addr.handle};
+        RawPtr raw = addr;
         memFreeRaw(raw);
     }
 
-    CommandBuffer commandsBegin(Queue queue = Queue::Main);
+    Bool init(TemporaryAllocator& temp_alloc, GLFWwindow *window);
 
-    void cmdMemCpyRaw(CommandBuffer cmd, RawPtr dst, RawPtr src, Uint64 bytes);
+    void shutdown(void);
+
+    void waitIdle(void);
+
+    Swapchain createSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight);
+
+    void destroySwapchain(Swapchain& swapchain);
+
+    void swapchainInit(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight);
+
+    ShaderHandle shaderCreate(TemporaryAllocator& temp_alloc, StringView filePath);
+
+    void shaderDestroy(ShaderHandle& shader);
+
+    struct PipelineDesc {
+        ShaderHandle vs;
+        ShaderHandle fs;
+
+        Slice<TextureFormat> colorFormats;
+        TextureFormat depthFormat = TextureFormat::Default;
+        TextureFormat stencilFormat = TextureFormat::Default;
+    };
+
+    GraphicsPipelineHandle graphicsPipelineCreate(TemporaryAllocator& temp_alloc, PipelineDesc desc);
+
+    void graphicsPipelineDestroy(GraphicsPipelineHandle& pipeline);
+
+    struct DepthState {
+        DepthFlags mode;
+        CompareOp compare;
+    };
+
+    struct BlendState {
+        Bool enable;
+        BlendOp colorOp;
+        BlendFactor srcColorFactor;
+        BlendFactor dstColorFactor;
+        BlendOp alphaOp;
+        BlendFactor srcAlphaFactor;
+        BlendFactor dstAlphaFactor;
+        Uint8 colorWriteMask;
+    };
+
+    CommandBufferHandle commandsBegin(void);
+
+    void cmdMemCpyRaw(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes);
 
     template<typename T>
-    void cmdMemCpy(CommandBuffer cmd, RawPtr dst, RawPtr src, Uint64 elementCount) {
+    void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 elementCount) {
         cmdMemCpyRaw(cmd, dst, src, elementCount * sizeof(T));
     }
 
-    void cmdBarrier(CommandBuffer cmd, Stage before, Stage after, Hazard hazards = Hazard::None);
+    Arena& getFrameArena();
 
-    void queueSubmit(Queue queue, CommandBuffer cmd);
+    CommandBufferHandle beginFrame();
 
-    SemaphoreHandle semaphoreCreate(Uint64 initValue = 0);
+    void endFrame(CommandBufferHandle cmdHandle);
 
-    void semaphoreDestroy(SemaphoreHandle sem);
+    void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a);
 
-    void waitIdle();
+    void cmdEndRendering(CommandBufferHandle cmd);
 
-    void semaphoreWait(SemaphoreHandle sem, Uint64 value);
+    void cmdSetViewportScissor(CommandBufferHandle cmd, Uint32 width, Uint32 height);
 
-    void cmdBeginRenderPass(CommandBuffer cmd, const RenderPassDesc& desc);
-    void cmdEndRenderPass(CommandBuffer cmd);
-    void cmdBindGraphicsPipeline(CommandBuffer cmd, PipelineHandle pipeline);
+    void cmdPushConstants(CommandBufferHandle cmd, const void* data, Uint32 size);
 
-    void cmdDrawIndexedInstanced(CommandBuffer cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, Uint32 indexCount, Uint32 instanceCount = 1);
+    CommandBufferHandle beginSingleTimeCommands();
 
-    void cmdAddWaitSemaphore(CommandBuffer cmd, SemaphoreHandle sem, Uint64 value);
-    void cmdAddSignalSemaphore(CommandBuffer cmd, SemaphoreHandle sem, Uint64 value);
+    void endSingleTimeCommands(CommandBufferHandle cmd);
 
-    Texture swapchainAcquireNext();
+    void queueSubmit(CommandBufferHandle cmd);
 
-    void swapchainPresent(Queue queue, SemaphoreHandle waitSem, Uint64 waitValue);
+    void cmdBindGraphicsPipeline(CommandBufferHandle cmd, GraphicsPipelineHandle pipeline);
 
-    void cmdSetBlendState(CommandBuffer cmd, const BlendState& state);
-    void cmdSetDepthState(CommandBuffer cmd, const DepthState& state);
-    void cmdSetRasterizerState(CommandBuffer cmd, CullMode cull, FrontFace face, PrimitiveTopology topology = PrimitiveTopology::TriangleList);
+    void cmdSetBlendState(CommandBufferHandle cmd, const BlendState& state);
+
+    void cmdSetDepthState(CommandBufferHandle cmd, const DepthState& state);
+
+    void cmdSetRasterizerState(CommandBufferHandle cmd, CullMode cull, FrontFace face, PrimitiveTopology topology);
+
+    void cmdBarrier(CommandBufferHandle cmd, Stage before, Stage after, Hazard hazards = Hazard::None);
+
+    void cmdDrawInstanced(CommandBufferHandle& cmd, Uint32 vertexCount, Uint32 instanceCount, Uint32 firstVertex, Uint32 firstInstance);
 }
 
 #endif // GPU_HPP

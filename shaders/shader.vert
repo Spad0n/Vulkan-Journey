@@ -11,14 +11,10 @@ layout(buffer_reference, scalar) buffer VertexBuffer {
     Vertex vertices[];
 };
 
-layout(buffer_reference, scalar) buffer DrawData {
+layout(push_constant, scalar) uniform DrawData {
     mat4 transform;
     VertexBuffer vBufferPtr;
-};
-
-layout(push_constant) uniform RootConstants {
-    DrawData root;
-};
+} root;
 
 layout(location = 0) out vec3 outColor;
 

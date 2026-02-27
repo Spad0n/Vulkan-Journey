@@ -124,21 +124,18 @@ namespace ctl {
     }
 
     void Slab::deallocate(SlabRef slab_ref) {
-	const auto cache_idx = Uint32(slab_ref.index / capacity_);
-	const auto cache_ref = Uint32(slab_ref.index % capacity_);
-	auto* cache = &caches_[cache_idx];
-	(*cache)->deallocate(PoolRef { cache_ref });
-	while (!caches_.is_empty() && (*cache)->is_empty()) {
-            if (cache != &caches_.last()) {
-                cache->reset();
-                break;
-            }
+        const auto cache_idx = Uint32(slab_ref.index / capacity_);
+        const auto cache_ref = Uint32(slab_ref.index % capacity_);
+    
+        caches_[cache_idx]->deallocate(PoolRef { cache_ref });
+
+        if (caches_[cache_idx]->is_empty()) {
+            caches_[cache_idx].reset(); 
+        }
+
+        while (!caches_.is_empty() && !caches_.last().is_valid()) {
             caches_.pop_back();
-            cache = &caches_.last();
-            if (!cache->is_valid()) {
-                break;
-            }
-	}
+        }
     }
 
 } // namespace ctl
