@@ -22,6 +22,7 @@ Before building, ensure you have:
 - A GPU with drivers supporting `Descriptor Buffers`
 - **CMake** (3.25+)
 - **C++20**
+- **Slang** for compiling slang shader into SPIR-V
 
 ## Building the project
 
