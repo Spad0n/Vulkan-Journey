@@ -377,6 +377,8 @@ namespace gpu {
 
     void swapchainInit(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight);
 
+    void recreateSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height);
+
     ShaderHandle shaderCreate(TemporaryAllocator& temp_alloc, StringView filePath);
 
     void shaderDestroy(ShaderHandle shader);
@@ -421,9 +423,11 @@ namespace gpu {
 
     Arena& getFrameArena();
 
-    CommandBufferHandle beginFrame();
+    //[[depecrated]] CommandBufferHandle beginFrame();
 
-    void endFrame(CommandBufferHandle cmdHandle);
+    //[[depecrated]] void endFrame(CommandBufferHandle cmdHandle);
+
+    CommandBufferHandle commandsBegin(void);
 
     void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a);
 
@@ -433,9 +437,13 @@ namespace gpu {
 
     void cmdPushConstants(CommandBufferHandle cmd, const void* data, Uint32 size);
 
-    CommandBufferHandle beginSingleTimeCommands();
+    //[[depecrated]] CommandBufferHandle beginSingleTimeCommands();
 
-    void endSingleTimeCommands(CommandBufferHandle cmd);
+    //[[depecrated]] void endSingleTimeCommands(CommandBufferHandle cmd);
+
+    Bool acquireNextImage(Uint32& width, Uint32& height);
+
+    void present(void);
 
     void queueSubmit(CommandBufferHandle cmd);
 

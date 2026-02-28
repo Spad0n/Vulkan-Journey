@@ -74,29 +74,48 @@ Sint32 main() {
     auto vertsLocal = gpu::memAlloc<Vertex>(3, Memory::GPU);
     defer(gpu::memFree(vertsLocal));
 
-    auto uploadCmdBuffer = gpu::beginSingleTimeCommands();
+    auto uploadCmdBuffer = gpu::commandsBegin();
     gpu::cmdMemCpy<Vertex>(uploadCmdBuffer, vertsLocal, verts, verts.length());
     gpu::cmdBarrier(uploadCmdBuffer, Stage::Transfer, Stage::All);
-    gpu::endSingleTimeCommands(uploadCmdBuffer);
+    gpu::queueSubmit(uploadCmdBuffer);
+
+    gpu::waitIdle();
         
     while (!glfwWindowShouldClose(window)) {
         temp_alloc.reset();
         glfwPollEvents();
 
-        gpu::CommandBufferHandle cmdBuf = gpu::beginFrame();
-        if (!cmdBuf.is_valid()) continue;
+        Sint32 width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        if (width == 0 || height == 0) {
+            glfwWaitEvents();
+            continue;
+        }
+
+        Uint32 actualWidth, actualHeight;
+        if (!gpu::acquireNextImage(actualWidth, actualHeight)) {
+            gpu::recreateSwapchain(temp_alloc, width, height);
+            continue;
+        }
+
+        gpu::CommandBufferHandle cmdBuf = gpu::commandsBegin();
 
         gpu::Arena& frameArena = gpu::getFrameArena();
-        frameArena.reset();
 
-        gpu::cmdBeginRendering(cmdBuf, LoadOp::Clear, StoreOp::Store, 0.1f, 0.1f, 0.1f, 1.0f);
+        Float64 time = glfwGetTime();
+
+        Float32 r = static_cast<Float32>((sin(time) + 1.0) * 0.25);
+        Float32 g = static_cast<Float32>((sin(time + 2.0944) + 1.0) * 0.25);
+        Float32 b = static_cast<Float32>((sin(time) + 4.18879) * 0.25);
+
+        gpu::cmdBeginRendering(cmdBuf, LoadOp::Clear, StoreOp::Store, r, g, b, 1.0f);
 
         gpu::cmdSetViewportScissor(cmdBuf, SCREEN_WIDTH, SCREEN_HEIGHT);
 
         gpu::cmdBindGraphicsPipeline(cmdBuf, pipeline);
 
         gpu::BlendState blend{};
-        blend.enable = false; // Désactivé pour l'instant
+        blend.enable = false; // deactivate for now
         blend.colorWriteMask = 0xF; // RGBA
         gpu::cmdSetBlendState(cmdBuf, blend);
 
@@ -115,7 +134,9 @@ Sint32 main() {
         gpu::cmdDrawIndexedInstanced(cmdBuf, vertsData, gpu::RawPtr{}, gpu::RawPtr{}, 3, 1);
         gpu::cmdEndRendering(cmdBuf);
 
-        gpu::endFrame(cmdBuf);
+        gpu::queueSubmit(cmdBuf);
+
+        gpu::present();
     }
 
     gpu::waitIdle();

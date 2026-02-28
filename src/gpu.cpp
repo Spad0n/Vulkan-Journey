@@ -73,6 +73,7 @@ struct GraphicsPipelineInfo {
 
 struct CommandBufferInfo {
     VkCommandBuffer handle;
+    Bool usesSwapchain = false;
 };
 
 SystemAllocator sys_alloc;
@@ -81,8 +82,8 @@ struct PerFrameData {
     VkFence fence;
     VkSemaphore acquireSemaphore;
     VkCommandPool commandPool;
-    VkCommandBuffer commandBuffer;
-    gpu::CommandBufferHandle cmdHandle;
+    Array<gpu::CommandBufferHandle> commandBuffers{sys_alloc};
+    Uint32 commandBufferCount = 0;
     gpu::Arena arena{sys_alloc};
 };
 
@@ -117,7 +118,6 @@ namespace gpu {
         {
             const char* layers[] = {
                 "VK_LAYER_KHRONOS_validation",
-                //"VK_LAYER_KHRONOS_shader_object",
             };
 
             Array<const char*> extensions(temp_alloc);
@@ -145,6 +145,7 @@ namespace gpu {
             VkInstanceCreateInfo instanceCI {
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                 .pNext = &debugMessengerCI,
+                //.pNext = nullptr,
                 .pApplicationInfo = &appInfo,
                 .enabledLayerCount = STATIC_LEN(layers),
                 .ppEnabledLayerNames = layers,
@@ -158,6 +159,7 @@ namespace gpu {
             assert(vkDestroyInstance != nullptr);
 
             vkCheck(vkCreateDebugUtilsMessengerEXT(ctx.instance, &debugMessengerCI, nullptr, &ctx.debugMessenger));
+            //ctx.debugMessenger = nullptr;
         }
 
         // Creation of surface
@@ -330,6 +332,7 @@ namespace gpu {
                 vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
                 vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
                 frame.arena.destroy();
+                frame.commandBuffers.destroy();
             }
             ctx.perFrames.destroy();
 
@@ -484,16 +487,7 @@ namespace gpu {
         for (auto& frame : ctx.perFrames) {
             vkCheck(vkCreateCommandPool(ctx.device, &commandPoolCI, nullptr, &frame.commandPool));
 
-            VkCommandBufferAllocateInfo commandBufferAI {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandPool = frame.commandPool,
-                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = 1,
-            };
-            vkCheck(vkAllocateCommandBuffers(ctx.device, &commandBufferAI, &frame.commandBuffer));
-
-            CommandBufferInfo cbInfo{ frame.commandBuffer };
-            frame.cmdHandle = ctx.commandBuffers.add(cbInfo).value();
+            frame.commandBufferCount = 0;
 
             VkSemaphoreCreateInfo semaphoreCI { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
             vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &frame.acquireSemaphore));
@@ -503,6 +497,110 @@ namespace gpu {
                 .flags = VK_FENCE_CREATE_SIGNALED_BIT,
             };
             vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frame.fence));
+        }
+    }
+
+    void recreateSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height) {
+        vkDeviceWaitIdle(ctx.device);
+
+        // reset ctx.swapchain
+        ctx.swapchain.images.reset();
+        for (auto semaphore : ctx.swapchain.presentSemaphores) {
+            vkDestroySemaphore(ctx.device, semaphore, nullptr);
+        }
+        ctx.swapchain.presentSemaphores.reset();
+        for (auto imageView : ctx.swapchain.imageViews) {
+            vkDestroyImageView(ctx.device, imageView, nullptr);
+        }
+        ctx.swapchain.imageViews.reset();
+        vkDestroySwapchainKHR(ctx.device, ctx.swapchain.handle, nullptr);
+
+        // recreate swapchain
+        VkSurfaceCapabilitiesKHR surfaceCaps{0};
+        vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice, ctx.surface, &surfaceCaps));
+
+        Uint32 imageCount = surfaceCaps.minImageCount + 1;
+        if (surfaceCaps.maxImageCount != 0) {
+            imageCount = MIN(imageCount, surfaceCaps.maxImageCount);
+        }
+
+        Uint32 surfaceFormatCount = 0;
+        vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(ctx.physicalDevice, ctx.surface, &surfaceFormatCount, nullptr));
+
+        Array<VkSurfaceFormatKHR> surfaceFormats(temp_alloc);
+        surfaceFormats.resize(surfaceFormatCount);
+
+        vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(ctx.physicalDevice, ctx.surface, &surfaceFormatCount, surfaceFormats.data()));
+
+        VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0];
+        for (VkSurfaceFormatKHR candidate : surfaceFormats) {
+            if (candidate.format == VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace == VK_COLORSPACE_SRGB_NONLINEAR_KHR) {
+                surfaceFormat = candidate;
+                break;
+            }
+        }
+        ctx.swapchain.imageFormat = surfaceFormat.format;
+
+        Uint32 presentModeCount = 0;
+        vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(ctx.physicalDevice, ctx.surface, &presentModeCount, nullptr));
+
+        Array<VkPresentModeKHR> presentModes(temp_alloc);
+        presentModes.resize(presentModeCount);
+
+        vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(ctx.physicalDevice, ctx.surface, &presentModeCount, presentModes.data()));
+
+        VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        for (VkPresentModeKHR candidate : presentModes) {
+            if (candidate == VK_PRESENT_MODE_FIFO_KHR) {
+                presentMode = candidate;
+                break;
+            }
+        }
+
+        ctx.swapchain.width = width;
+        ctx.swapchain.height = height;
+
+        VkSwapchainCreateInfoKHR swapchainCI = {
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .surface = ctx.surface,
+            .minImageCount = imageCount,
+            .imageFormat = surfaceFormat.format,
+            .imageColorSpace = surfaceFormat.colorSpace,
+            .imageExtent = {
+                .width  = ctx.swapchain.width,
+                .height = ctx.swapchain.height,
+            },
+            .imageArrayLayers = 1,
+            .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .preTransform = surfaceCaps.currentTransform,
+            .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            .presentMode = presentMode,
+            .clipped = true
+        };
+        vkCheck(vkCreateSwapchainKHR(ctx.device, &swapchainCI, nullptr, &ctx.swapchain.handle));
+
+        vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, nullptr));
+        ctx.swapchain.images.resize(imageCount);
+        vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, ctx.swapchain.images.data()));
+
+        ctx.swapchain.imageViews.resize(imageCount);
+        ctx.swapchain.presentSemaphores.resize(imageCount);
+        for (Ulen i = 0; i < ctx.swapchain.images.length(); i++) {
+            VkImageViewCreateInfo imageCI {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .image = ctx.swapchain.images[i],
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format = surfaceFormat.format,
+                .subresourceRange = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                },
+            };
+            vkCheck(vkCreateImageView(ctx.device, &imageCI, nullptr, &ctx.swapchain.imageViews[i]));
+
+            VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+            vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &ctx.swapchain.presentSemaphores[i]));
         }
     }
 
@@ -835,46 +933,94 @@ namespace gpu {
     //////// COMMANDS BUFFERS /////////////////////////////////////////////////////////////////////
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    CommandBufferHandle beginFrame() {
+    CommandBufferHandle commandsBegin(void) {
         auto& frame = ctx.perFrames[ctx.frameIndex];
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        CommandBufferHandle handle;
 
-        vkCheck(vkWaitForFences(ctx.device, 1, &frame.fence, VK_TRUE, UINT64_MAX));
-        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
+        if (frame.commandBufferCount < frame.commandBuffers.length()) {
+            handle = frame.commandBuffers[frame.commandBufferCount];
+            auto cbInfo = ctx.commandBuffers.get(handle);
+            cbInfo->usesSwapchain = false;
+            cb = cbInfo->handle;
+        } else {
+            // S'il nous en faut un nouveau, on l'alloue et on le cache
+            VkCommandBufferAllocateInfo allocInfo {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = frame.commandPool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = 1,
+            };
+            vkCheck(vkAllocateCommandBuffers(ctx.device, &allocInfo, &cb));
 
-        frame.arena.reset();
+            CommandBufferInfo cbInfo { cb, false };
+            handle = ctx.commandBuffers.add(cbInfo).value();
+            frame.commandBuffers.push_back(handle);
+        }
 
-        VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, frame.acquireSemaphore, VK_NULL_HANDLE, &ctx.imageIndex);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR) return CommandBufferHandle{};
-
-        vkResetCommandBuffer(frame.commandBuffer, 0);
+        frame.commandBufferCount += 1;
 
         VkCommandBufferBeginInfo beginInfo {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
         };
-        vkCheck(vkBeginCommandBuffer(frame.commandBuffer, &beginInfo));
+        vkCheck(vkBeginCommandBuffer(cb, &beginInfo));
 
-        return frame.cmdHandle;
+        return handle;
     }
 
-    void endFrame(CommandBufferHandle cmdHandle) {
-        auto& frame = ctx.perFrames[ctx.frameIndex];
-        vkCheck(vkEndCommandBuffer(frame.commandBuffer));
+    void queueSubmit(CommandBufferHandle cmd) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        if (!cbInfo) return;
 
-        VkSemaphore presentSemaphore = ctx.swapchain.presentSemaphores[ctx.imageIndex];
+        vkCheck(vkEndCommandBuffer(cbInfo->handle));
 
-        VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submitInfo {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &frame.acquireSemaphore,
-            .pWaitDstStageMask = &waitStage,
             .commandBufferCount = 1,
-            .pCommandBuffers = &frame.commandBuffer,
-            .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &presentSemaphore,
+            .pCommandBuffers = &cbInfo->handle,
         };
-        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, frame.fence));
+
+        auto& frame = ctx.perFrames[ctx.frameIndex];
+        VkFence fenceToSignal = VK_NULL_HANDLE;
+
+        // C'est ici que la magie de la V1 s'opère :
+        if (cbInfo->usesSwapchain) {
+            VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = &frame.acquireSemaphore;
+            submitInfo.pWaitDstStageMask = &waitStage;
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &ctx.swapchain.presentSemaphores[ctx.imageIndex];
+
+            fenceToSignal = frame.fence;
+        }
+
+        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, fenceToSignal));
+    }
+
+    Bool acquireNextImage(Uint32& outWidth, Uint32& outHeight) {
+        auto& frame = ctx.perFrames[ctx.frameIndex];
+
+        vkCheck(vkWaitForFences(ctx.device, 1, &frame.fence, VK_TRUE, UINT64_MAX));
+        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
+
+        frame.commandBufferCount = 0; // On indique simplement qu'on repart de zéro
+        frame.arena.reset();
+
+        VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, frame.acquireSemaphore, VK_NULL_HANDLE, &ctx.imageIndex);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+            return false;
+        }
+        vkCheck(res);
+
+        outWidth = ctx.swapchain.width;
+        outHeight = ctx.swapchain.height;
+        return true;
+    }
+
+    void present(void) {
+        VkSemaphore presentSemaphore = ctx.swapchain.presentSemaphores[ctx.imageIndex];
 
         VkPresentInfoKHR presentInfo {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -886,12 +1032,13 @@ namespace gpu {
         };
         vkQueuePresentKHR(ctx.queue, &presentInfo);
 
-        // next frame
         ctx.frameIndex = (ctx.frameIndex + 1) % ctx.perFrames.length();
     }
 
     void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
+
+        cbInfo->usesSwapchain = true;
 
         // Transition from image Swapchain to COLOR_ATTACHMENT
         VkImageMemoryBarrier2 barrier {
@@ -958,40 +1105,6 @@ namespace gpu {
     void cmdPushConstants(CommandBufferHandle cmd, const void* data, Uint32 size) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
         vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
-    }
-
-    CommandBufferHandle beginSingleTimeCommands() {
-        VkCommandBufferAllocateInfo allocInfo {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = ctx.perFrames[0].commandPool,
-            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            .commandBufferCount = 1,
-        };
-        VkCommandBuffer cb;
-        vkAllocateCommandBuffers(ctx.device, &allocInfo, &cb);
-
-        VkCommandBufferBeginInfo beginInfo {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        };
-        vkBeginCommandBuffer(cb, &beginInfo);
-        return ctx.commandBuffers.add(CommandBufferInfo{cb}).value();
-    }
-
-    void endSingleTimeCommands(CommandBufferHandle cmd) {
-        auto cbInfo = ctx.commandBuffers.get(cmd);
-        vkEndCommandBuffer(cbInfo->handle);
-
-        VkSubmitInfo submitInfo {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cbInfo->handle,
-        };
-        vkQueueSubmit(ctx.queue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(ctx.queue);
-
-        vkFreeCommandBuffers(ctx.device, ctx.perFrames[0].commandPool, 1, &cbInfo->handle);
-        ctx.commandBuffers.remove(cmd);
     }
 
     static Bool getBufferAndOffset(RawPtr ptr, VkBuffer& outBuffer, VkDeviceSize& outOffset) {
