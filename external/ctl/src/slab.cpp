@@ -96,6 +96,17 @@ namespace ctl {
 	return true;
     }
 
+    void Slab::destroy() {
+        for (auto& cache : caches_) {
+            if (cache.is_valid()) {
+                cache->destroy();
+            }
+            caches_.destroy();
+            capacity_ = 0;
+            size_ = 0;
+        }
+    }
+
     Maybe<SlabRef> Slab::allocate() {
 	const auto n_caches = caches_.length();
 	for (Ulen i = n_caches - 1; i < n_caches; i--) {

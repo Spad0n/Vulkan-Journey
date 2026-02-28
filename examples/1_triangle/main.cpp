@@ -4,14 +4,13 @@
 #include "ctl/allocator.hpp"
 #include "macro_utils.hpp"
 #include "glm/glm.hpp"
-#include "glm/gtc/matrix_transform.hpp"
 #include "gpu.hpp"
 
 using namespace ctl;
 
-constexpr Uint32 SCREEN_WIDTH  = 800;
-constexpr Uint32 SCREEN_HEIGHT = 800;
-constexpr Uint32 FramesInFlight = 3;
+constexpr Uint32 SCREEN_WIDTH     = 800;
+constexpr Uint32 SCREEN_HEIGHT    = 800;
+constexpr Uint32 FRAMES_IN_FLIGHT = 2;
 
 static void errorCallback(Sint32 error, const char *description) {
     fprintf(stderr, "GLFW Error: %d %s\n", error, description);
@@ -44,7 +43,7 @@ Sint32 main() {
     }
     defer(gpu::shutdown());
 
-    gpu::swapchainInit(temp_alloc, SCREEN_WIDTH, SCREEN_HEIGHT, 3);
+    gpu::swapchainInit(temp_alloc, SCREEN_WIDTH, SCREEN_HEIGHT, FRAMES_IN_FLIGHT);
 
     gpu::ShaderHandle vs = gpu::shaderCreate(temp_alloc, "shaders/shader.vert.spv");
     gpu::ShaderHandle fs = gpu::shaderCreate(temp_alloc, "shaders/shader.frag.spv");
@@ -89,7 +88,6 @@ Sint32 main() {
 
         gpu::Arena& frameArena = gpu::getFrameArena();
         frameArena.reset();
-
 
         gpu::cmdBeginRendering(cmdBuf, LoadOp::Clear, StoreOp::Store, 0.1f, 0.1f, 0.1f, 1.0f);
 

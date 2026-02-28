@@ -11,9 +11,6 @@
 #include "vk_mem_alloc.h"
 #include "gpu.hpp"
 
-#define NUM_FRAMES_IN_FLIGHT 3
-#define NUM_SWAPCHAIN_IMAGE 3
-
 using namespace ctl;
 
 static const char* VkResultToString(VkResult result) {
@@ -83,7 +80,6 @@ SystemAllocator sys_alloc;
 struct PerFrameData {
     VkFence fence;
     VkSemaphore acquireSemaphore;
-    VkSemaphore renderSemaphore;
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
     gpu::CommandBufferHandle cmdHandle;
@@ -332,9 +328,8 @@ namespace gpu {
             for (auto& frame : ctx.perFrames) {
                 vkDestroyFence(ctx.device, frame.fence, nullptr);
                 vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
-                vkDestroySemaphore(ctx.device, frame.renderSemaphore, nullptr);
                 vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
-                frame.arena.destroy(); // <--- Libère la mémoire VMA bloquée !
+                frame.arena.destroy();
             }
             ctx.perFrames.destroy();
 
@@ -356,6 +351,11 @@ namespace gpu {
         if (ctx.instance) {
             vkDestroyInstance(ctx.instance, nullptr);
         }
+
+        ctx.allocs.destroy();
+        ctx.commandBuffers.destroy();
+        ctx.shaders.destroy();
+        ctx.graphicsPipelines.destroy();
     }
 
     void waitIdle(void) {
@@ -365,13 +365,13 @@ namespace gpu {
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //////// SWAPCHAIN ////////////////////////////////////////////////////////////////////////////
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    Swapchain createSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight) {
+    Swapchain createSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height) {
         Swapchain res{sys_alloc};
 
         VkSurfaceCapabilitiesKHR surfaceCaps{0};
         vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice, ctx.surface, &surfaceCaps));
 
-        Uint32 imageCount = MAX(MAX(2, surfaceCaps.minImageCount), framesInFlight);
+        Uint32 imageCount = surfaceCaps.minImageCount + 1;
         if (surfaceCaps.maxImageCount != 0) {
             imageCount = MIN(imageCount, surfaceCaps.maxImageCount);
         }
@@ -472,7 +472,7 @@ namespace gpu {
     }
 
     void swapchainInit(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight) {
-        ctx.swapchain = createSwapchain(temp_alloc, width, height, framesInFlight);
+        ctx.swapchain = createSwapchain(temp_alloc, width, height);
 
         // instance frames
         ctx.perFrames.resize(framesInFlight);
@@ -492,13 +492,11 @@ namespace gpu {
             };
             vkCheck(vkAllocateCommandBuffers(ctx.device, &commandBufferAI, &frame.commandBuffer));
 
-            // Enregistrement dans le pool pour l'API Handles
             CommandBufferInfo cbInfo{ frame.commandBuffer };
             frame.cmdHandle = ctx.commandBuffers.add(cbInfo).value();
 
             VkSemaphoreCreateInfo semaphoreCI { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
             vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &frame.acquireSemaphore));
-            vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &frame.renderSemaphore));
 
             VkFenceCreateInfo fenceCI {
                 .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -692,20 +690,20 @@ namespace gpu {
         };
 
         VkPipelineMultisampleStateCreateInfo multisample {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, // AJOUTER ÇA
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
         };
 
         VkPipelineDepthStencilStateCreateInfo depthStencil {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, // AJOUTER ÇA
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         };
 
         VkPipelineColorBlendStateCreateInfo colorBlend {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, // AJOUTER ÇA
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         };
 
         VkPipelineVertexInputStateCreateInfo vertexInput {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO // OK
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
         };
 
         VkPipelineViewportStateCreateInfo viewportState {
@@ -755,7 +753,7 @@ namespace gpu {
             .pMultisampleState = &multisample,
             .pDepthStencilState = &depthStencil,   // ignored
             .pColorBlendState = &colorBlend,       // ignored
-            .pDynamicState = &dynamicInfo,         // now
+            .pDynamicState = &dynamicInfo,         
             .layout = ctx.commonPipelineLayoutGraphics,
         };
 
@@ -817,7 +815,7 @@ namespace gpu {
         if (block.ptr.cpu) {
             ptr.cpu = static_cast<Uint8*>(block.ptr.cpu) + alignedOffset;
         } else {
-            ptr.cpu = nullptr; // Cas ou Memory::GPU est utilise (non mappable sur CPU)
+            ptr.cpu = nullptr; // Case where Memory::GPU is used (not mappable on the CPU)
         }
         ptr.gpu = block.ptr.gpu + alignedOffset;
         
@@ -863,6 +861,8 @@ namespace gpu {
         auto& frame = ctx.perFrames[ctx.frameIndex];
         vkCheck(vkEndCommandBuffer(frame.commandBuffer));
 
+        VkSemaphore presentSemaphore = ctx.swapchain.presentSemaphores[ctx.imageIndex];
+
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo submitInfo {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -872,28 +872,28 @@ namespace gpu {
             .commandBufferCount = 1,
             .pCommandBuffers = &frame.commandBuffer,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &frame.renderSemaphore,
+            .pSignalSemaphores = &presentSemaphore,
         };
         vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, frame.fence));
 
         VkPresentInfoKHR presentInfo {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &frame.renderSemaphore,
+            .pWaitSemaphores = &presentSemaphore,
             .swapchainCount = 1,
             .pSwapchains = &ctx.swapchain.handle,
             .pImageIndices = &ctx.imageIndex,
         };
         vkQueuePresentKHR(ctx.queue, &presentInfo);
 
-        // Passer à la frame suivante
+        // next frame
         ctx.frameIndex = (ctx.frameIndex + 1) % ctx.perFrames.length();
     }
 
     void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
 
-        // Transition de l'image Swapchain vers COLOR_ATTACHMENT
+        // Transition from image Swapchain to COLOR_ATTACHMENT
         VkImageMemoryBarrier2 barrier {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -931,7 +931,7 @@ namespace gpu {
         auto cbInfo = ctx.commandBuffers.get(cmd);
         vkCmdEndRendering(cbInfo->handle);
 
-        // Transition vers PRESENT
+        // Transition to PRESENT
         VkImageMemoryBarrier2 barrier {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,

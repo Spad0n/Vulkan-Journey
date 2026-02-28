@@ -32,6 +32,8 @@ namespace ctl {
         /// @brief Saves the Slab to a stream.
 	Bool save(Stream& stream) const;
 
+        void destroy();
+
         /// @brief Allocates a new object. Automatically grows if necessary.
 	Maybe<SlabRef> allocate();
 

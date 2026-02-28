@@ -108,6 +108,21 @@ namespace ctl {
     {
     }
 
+    void Pool::destroy() {
+        if (data_) {
+            allocator_.deallocate(data_, size_ * capacity_);
+            data_ = nullptr;
+        }
+
+        if (used_) {
+            allocator_.deallocate(used_, capacity_ / BITS);
+            used_ = nullptr;
+        }
+        capacity_ = 0;
+        size_ = 0;
+        length_ = 0;
+    }
+
 #if defined(CTL_COMPILER_MSVC)
 
     typedef unsigned long DWORD;

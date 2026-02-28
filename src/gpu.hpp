@@ -175,6 +175,11 @@ namespace gpu {
             , generations_{allocator}
         {}
 
+        void destroy() {
+            slab_.destroy();
+            generations_.destroy();
+        }
+
         template<typename U>
         Maybe<Handle<Tag>> add(U&& item) {
             if (auto ref = slab_.allocate()) {
@@ -366,7 +371,7 @@ namespace gpu {
 
     void waitIdle(void);
 
-    Swapchain createSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height, Uint32 framesInFlight);
+    Swapchain createSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height);
 
     void destroySwapchain(Swapchain& swapchain);
 
