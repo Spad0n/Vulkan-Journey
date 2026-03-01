@@ -38,7 +38,7 @@ private:
     int cols_;
 };
 
-// initialize to this matrices and should be ntri = (24 / 6) = 4
+// initialize to this matrices
 // 0 1 0 0 1 0 1 0
 // 1 0 0 0 1 1 0 0
 // 0 0 0 0 1 1 1 1
@@ -74,7 +74,7 @@ int main() {
     SystemAllocator sys_alloc;
     TemporaryAllocator temp_alloc{sys_alloc};
 
-    // 1. Initialise Vulkan (without window)
+    // Initialize Vulkan (without window)
     if (!glfwInit()) return 1;
     defer(glfwTerminate());
 
@@ -85,14 +85,14 @@ int main() {
 
     if (!gpu::init(temp_alloc, window)) return 1;
     defer(gpu::shutdown());
-    gpu::swapchainInit(temp_alloc, 800, 800, 1); // Indispensable pour l'architecture
+    gpu::swapchainInit(temp_alloc, 800, 800, 1); // need to use swapchain to enable some features
 
     constexpr int N = 8;
     Matrix a(temp_alloc, N, N);
     demo(a);
     printf("N = %d\n", N);
 
-    // 3. load shaders and pipelines
+    // load shaders and pipelines
     gpu::ShaderHandle csMatmul = gpu::shaderCreate(temp_alloc, "shaders/matmul.spv");
     gpu::ShaderHandle csTrace  = gpu::shaderCreate(temp_alloc, "shaders/trace.spv");
     gpu::ComputePipelineHandle pipeMatmul = gpu::computePipelineCreate(temp_alloc, csMatmul);
@@ -105,7 +105,7 @@ int main() {
         gpu::shaderDestroy(csTrace);
     });
 
-    // 4. allocate some memory
+    // allocate some memory
     auto staging_A = gpu::memAlloc<int>(N * N, Memory::Default);
     memcpy(staging_A.cpu.data(), a.data(), N * N * sizeof(int));
 
