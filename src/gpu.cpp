@@ -67,7 +67,7 @@ struct ShaderInfo {
     Uint32 currentWorkGroupSize[3];
 };
 
-struct GraphicsPipelineInfo {
+struct PipelineInfo {
     VkPipeline handle;
 };
 
@@ -95,6 +95,7 @@ struct Context {
     VkDevice device;
     Uint32 queueFamilyIndex;
     VkPipelineLayout commonPipelineLayoutGraphics;
+    VkPipelineLayout commonPipelineLayoutCompute;
     VkQueue queue;
     VmaAllocator vmaAllocator;
     gpu::Swapchain swapchain{sys_alloc};
@@ -105,7 +106,8 @@ struct Context {
     gpu::ResourcePool<AllocInfo, gpu::AllocTag> allocs{sys_alloc};
     gpu::ResourcePool<CommandBufferInfo, gpu::CommandBufferTag> commandBuffers{sys_alloc};
     gpu::ResourcePool<ShaderInfo, gpu::ShaderTag> shaders{sys_alloc};
-    gpu::ResourcePool<GraphicsPipelineInfo, gpu::GraphicsPipelineTag> graphicsPipelines{sys_alloc};
+    gpu::ResourcePool<PipelineInfo, gpu::GraphicsPipelineTag> graphicsPipelines{sys_alloc};
+    gpu::ResourcePool<PipelineInfo, gpu::ComputePipelineTag> computePipelines{sys_alloc};
 };
 
 static Context ctx;
@@ -299,7 +301,7 @@ namespace gpu {
             vkCheck(vmaCreateAllocator(&allocatorInfo, &ctx.vmaAllocator));
         }
 
-        // Pipeline Layout Global
+        // Pipeline Layout Global Graphics
         {
             VkPushConstantRange pushConstantRange {
                 .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -316,6 +318,25 @@ namespace gpu {
             };
 
             vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.commonPipelineLayoutGraphics));
+        }
+
+        // Pipeline Layout Global Compute
+        {
+            VkPushConstantRange pushConstantRange {
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .offset = 0,
+                .size = 128,
+            };
+
+            VkPipelineLayoutCreateInfo pipelineLayoutCI {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                .setLayoutCount = 0,
+                .pSetLayouts = nullptr,
+                .pushConstantRangeCount = 1,
+                .pPushConstantRanges = &pushConstantRange,
+            };
+
+            vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.commonPipelineLayoutCompute));
         }
 
         return true;
@@ -340,6 +361,7 @@ namespace gpu {
                 vmaDestroyAllocator(ctx.vmaAllocator);
             }
             vkDestroyPipelineLayout(ctx.device, ctx.commonPipelineLayoutGraphics, nullptr);
+            vkDestroyPipelineLayout(ctx.device, ctx.commonPipelineLayoutCompute, nullptr);
             vkDestroyDevice(ctx.device, nullptr);
         }
 
@@ -359,6 +381,7 @@ namespace gpu {
         ctx.commandBuffers.destroy();
         ctx.shaders.destroy();
         ctx.graphicsPipelines.destroy();
+        ctx.computePipelines.destroy();
     }
 
     void waitIdle(void) {
@@ -858,7 +881,7 @@ namespace gpu {
         VkPipeline pipeline{0};
         vkCheck(vkCreateGraphicsPipelines(ctx.device, 0, 1, &pipelineCI, nullptr, &pipeline));
 
-        GraphicsPipelineInfo gpInfo {
+        PipelineInfo gpInfo {
             .handle = pipeline,
         };
         return ctx.graphicsPipelines.add(gpInfo).value();
@@ -868,6 +891,50 @@ namespace gpu {
         auto info = ctx.graphicsPipelines.get(pipeline);
         vkDestroyPipeline(ctx.device, info->handle, nullptr);
         ctx.graphicsPipelines.remove(pipeline);
+    }
+
+    ComputePipelineHandle computePipelineCreate(TemporaryAllocator& temp_alloc, ShaderHandle cs) {
+        auto csInfo = ctx.shaders.get(cs);
+
+        VkComputePipelineCreateInfo pipelineCI {
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = csInfo->shaderModule,
+                .pName = "main",
+            },
+            .layout = ctx.commonPipelineLayoutCompute,
+        };
+
+        VkPipeline pipeline{0};
+        vkCheck(vkCreateComputePipelines(ctx.device, VK_NULL_HANDLE, 1, &pipelineCI, nullptr, &pipeline));
+
+        return ctx.computePipelines.add(PipelineInfo{pipeline}).value();
+    }
+
+    void computePipelineDestroy(ComputePipelineHandle pipeline) {
+        auto info = ctx.computePipelines.get(pipeline);
+        vkDestroyPipeline(ctx.device, info->handle, nullptr);
+        ctx.computePipelines.remove(pipeline);
+    }
+
+    void cmdBindComputePipeline(CommandBufferHandle cmd, ComputePipelineHandle pipeline) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        auto pInfo = ctx.computePipelines.get(pipeline);
+        if (cbInfo && pInfo) {
+            vkCmdBindPipeline(cbInfo->handle, VK_PIPELINE_BIND_POINT_COMPUTE, pInfo->handle);
+        }
+    }
+
+    void cmdDispatch(CommandBufferHandle cmd, Uint32 groupCountX, Uint32 groupCountY, Uint32 groupCountZ) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        vkCmdDispatch(cbInfo->handle, groupCountX, groupCountY, groupCountZ);
+    }
+
+    void cmdPushConstantsCompute(CommandBufferHandle cmd, const void* data, Uint32 size) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutCompute, VK_SHADER_STAGE_COMPUTE_BIT, 0, size, data);
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////

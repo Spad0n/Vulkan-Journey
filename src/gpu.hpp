@@ -161,11 +161,13 @@ namespace gpu {
     struct AllocTag {};
     struct CommandBufferTag {};
     struct GraphicsPipelineTag {};
+    struct ComputePipelineTag {};
     struct ShaderTag {};
 
     using AllocHandle = Handle<AllocTag>;
     using CommandBufferHandle = Handle<CommandBufferTag>;
     using GraphicsPipelineHandle = Handle<GraphicsPipelineTag>;
+    using ComputePipelineHandle = Handle<ComputePipelineTag>;
     using ShaderHandle = Handle<ShaderTag>;
 
     template<typename T, typename Tag>
@@ -395,6 +397,16 @@ namespace gpu {
     GraphicsPipelineHandle graphicsPipelineCreate(TemporaryAllocator& temp_alloc, PipelineDesc desc);
 
     void graphicsPipelineDestroy(GraphicsPipelineHandle pipeline);
+
+    ComputePipelineHandle computePipelineCreate(TemporaryAllocator& temp_alloc, ShaderHandle cs);
+
+    void computePipelineDestroy(ComputePipelineHandle pipeline);
+
+    void cmdBindComputePipeline(CommandBufferHandle cmd, ComputePipelineHandle pipeline);
+
+    void cmdDispatch(CommandBufferHandle cmd, Uint32 groupCountX, Uint32 groupCountY, Uint32 groupCountZ);
+
+    void cmdPushConstantsCompute(CommandBufferHandle cmd, const void *data, Uint32 size);
 
     struct DepthState {
         DepthFlags mode;
