@@ -357,7 +357,8 @@ namespace gpu {
     template<typename T>
     void memFree(Ptr<T> addr) {
         if (!addr.is_valid()) return;
-        memFreeRaw(addr);
+        RawPtr raw = addr;
+        memFreeRaw(raw);
     }
 
     template<typename T>
@@ -426,12 +427,7 @@ namespace gpu {
 
     CommandBufferHandle commandsBegin(void);
 
-    void cmdMemCpyRaw(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes);
-
-    template<typename T>
-    void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 elementCount) {
-        cmdMemCpyRaw(cmd, dst, src, elementCount * sizeof(T));
-    }
+    void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes);
 
     Arena& getFrameArena();
 

@@ -1185,7 +1185,7 @@ namespace gpu {
         return true;
     }
 
-    void cmdMemCpyRaw(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes) {
+    void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
         if (!cbInfo) return;
 

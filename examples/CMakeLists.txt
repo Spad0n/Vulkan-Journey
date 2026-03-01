@@ -42,5 +42,5 @@ compile_slang_shader_graphics(1_triangle 1_triangle/shaders/shader.slang fragmen
 add_executable(2_compute 2_compute/main.cpp)
 target_link_libraries(2_compute PRIVATE project_core)
 
-compile_slang_shader_compute(2_compute 2_compute/shaders/add.slang add.spv)
-compile_slang_shader_compute(2_compute 2_compute/shaders/mul.slang mul.spv)
+compile_slang_shader_compute(2_compute 2_compute/shaders/matmul.slang matmul.spv)
+compile_slang_shader_compute(2_compute 2_compute/shaders/trace.slang trace.spv)

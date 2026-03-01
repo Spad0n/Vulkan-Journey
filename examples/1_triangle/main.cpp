@@ -75,7 +75,7 @@ Sint32 main() {
     defer(gpu::memFree(vertsLocal));
 
     auto uploadCmdBuffer = gpu::commandsBegin();
-    gpu::cmdMemCpy<Vertex>(uploadCmdBuffer, vertsLocal, verts, verts.length());
+    gpu::cmdMemCpy(uploadCmdBuffer, vertsLocal, verts, verts.length() * sizeof(Vertex));
     gpu::cmdBarrier(uploadCmdBuffer, Stage::Transfer, Stage::All);
     gpu::queueSubmit(uploadCmdBuffer);
 

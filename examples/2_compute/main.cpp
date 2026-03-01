@@ -1,114 +1,171 @@
 #include <GLFW/glfw3.h>
 #include <stdio.h>
+#include <string.h>
+#include <assert.h>
 #include "ctl/allocator.hpp"
 #include "macro_utils.hpp"
 #include "gpu.hpp"
 
 using namespace ctl;
 
-constexpr Uint32 NUM_ELEMENTS = 1024;
+struct Matrix {
+    Matrix(Allocator& allocator, int row, int col)
+        : data_(allocator)
+        , rows_{row}
+        , cols_{col}
+    {
+        data_.resize(row * col);
+        for (auto& data : data_) {
+            data = 0;
+        }
+    }
 
-static void errorCallback(Sint32 error, const char *description) {
-    fprintf(stderr, "GLFW Error: %d %s\n", error, description);
-}
+    int& operator ()(int i, int j) {
+        return data_[i * cols_ + j];
+    }
 
-struct ComputePushConstants {
-    Uint64 dataAddress;
+    const int& operator ()(int i, int j) const {
+        return data_[i * cols_ + j];
+    }
+
+    int* data() {
+        return data_.data();
+    }
+
+private:
+    Array<int> data_;
+    int rows_;
+    int cols_;
 };
 
-Sint32 main() {
+// initialize to this matrices and should be ntri = (24 / 6) = 4
+// 0 1 0 0 1 0 1 0
+// 1 0 0 0 1 1 0 0
+// 0 0 0 0 1 1 1 1
+// 0 0 0 0 1 0 0 0
+// 1 1 1 1 0 0 1 0
+// 0 1 1 0 0 0 1 0
+// 1 0 1 0 1 1 0 0
+// 0 0 1 0 0 0 0 0
+void demo(Matrix& m) {
+    m(0, 1) = 1; m(0, 4) = 1; m(0, 6) = 1;
+    m(1, 0) = 1; m(1, 4) = 1; m(1, 5) = 1;
+    m(2, 4) = 1; m(2, 5) = 1; m(2, 6) = 1; m(2, 7) = 1;
+    m(3, 4) = 1; m(4, 0) = 1; m(4, 1) = 1; m(4, 2) = 1;
+    m(4, 3) = 1; m(4, 6) = 1; m(5, 1) = 1; m(5, 2) = 1;
+    m(5, 6) = 1; m(6, 0) = 1; m(6, 2) = 1; m(6, 4) = 1;
+    m(6, 5) = 1; m(7, 2) = 1;
+}
+
+struct MatmulPC {
+    Uint64 A;
+    Uint64 B;
+    Uint64 C;
+    Uint32 N;
+};
+
+struct TracePC {
+    Uint64 A;
+    Uint64 result;
+    Uint32 N;
+};
+
+int main() {
     SystemAllocator sys_alloc;
     TemporaryAllocator temp_alloc{sys_alloc};
 
-    glfwSetErrorCallback(errorCallback);
-
+    // 1. Initialise Vulkan (without window)
     if (!glfwInit()) return 1;
     defer(glfwTerminate());
 
-    if (!glfwVulkanSupported()) return 1;
-
-    // We create invisible screen juste for enable pipeline layout compute
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE); 
-    GLFWwindow *window = glfwCreateWindow(800, 800, "Compute Only", nullptr, nullptr);
-    if (!window) return 1;
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow *window = glfwCreateWindow(800, 800, "Compute Triangles", nullptr, nullptr);
     defer(glfwDestroyWindow(window));
 
-    if (!gpu::init(temp_alloc, window)) {
-        fprintf(stderr, "Failed to init Vulkan\n");
-        return 1;
-    }
+    if (!gpu::init(temp_alloc, window)) return 1;
     defer(gpu::shutdown());
+    gpu::swapchainInit(temp_alloc, 800, 800, 1); // Indispensable pour l'architecture
 
-    gpu::swapchainInit(temp_alloc, 800, 800, 1);
+    constexpr int N = 8;
+    Matrix a(temp_alloc, N, N);
+    demo(a);
+    printf("N = %d\n", N);
 
-    gpu::ShaderHandle csAdd = gpu::shaderCreate(temp_alloc, "shaders/add.spv");
-    gpu::ShaderHandle csMul = gpu::shaderCreate(temp_alloc, "shaders/mul.spv");
-    
-    gpu::ComputePipelineHandle pipeAdd = gpu::computePipelineCreate(temp_alloc, csAdd);
-    gpu::ComputePipelineHandle pipeMul = gpu::computePipelineCreate(temp_alloc, csMul);
+    // 3. load shaders and pipelines
+    gpu::ShaderHandle csMatmul = gpu::shaderCreate(temp_alloc, "shaders/matmul.spv");
+    gpu::ShaderHandle csTrace  = gpu::shaderCreate(temp_alloc, "shaders/trace.spv");
+    gpu::ComputePipelineHandle pipeMatmul = gpu::computePipelineCreate(temp_alloc, csMatmul);
+    gpu::ComputePipelineHandle pipeTrace  = gpu::computePipelineCreate(temp_alloc, csTrace);
 
     defer({
-        gpu::computePipelineDestroy(pipeAdd);
-        gpu::computePipelineDestroy(pipeMul);
-        gpu::shaderDestroy(csAdd);
-        gpu::shaderDestroy(csMul);
+        gpu::computePipelineDestroy(pipeMatmul);
+        gpu::computePipelineDestroy(pipeTrace);
+        gpu::shaderDestroy(csMatmul);
+        gpu::shaderDestroy(csTrace);
     });
 
-    // memory CPU for sending data
-    auto stagingBuffer = gpu::memAlloc<Float32>(NUM_ELEMENTS, Memory::Default);
-    // VRAM buffer
-    auto gpuBuffer = gpu::memAlloc<Float32>(NUM_ELEMENTS, Memory::GPU);
-    // Readback buffer for reading from CPU
-    auto readbackBuffer = gpu::memAlloc<Float32>(NUM_ELEMENTS, Memory::Readback);
+    // 4. allocate some memory
+    auto staging_A = gpu::memAlloc<int>(N * N, Memory::Default);
+    memcpy(staging_A.cpu.data(), a.data(), N * N * sizeof(int));
+
+    auto staging_Zero = gpu::memAlloc<int>(1, Memory::Default);
+    // TODO maybe implement memset on the gpu
+    staging_Zero[0] = 0;
+
+    auto d_A  = gpu::memAlloc<int>(N * N, Memory::GPU);
+    auto d_A2 = gpu::memAlloc<int>(N * N, Memory::GPU);
+    auto d_A3 = gpu::memAlloc<int>(N * N, Memory::GPU);
     
-    defer({
-        gpu::memFree(stagingBuffer);
-        gpu::memFree(gpuBuffer);
-        gpu::memFree(readbackBuffer);
-    });
+    auto d_trace = gpu::memAlloc<int>(1, Memory::GPU);
+    auto readback_trace = gpu::memAlloc<int>(1, Memory::Readback);
 
-    for (auto& stagingData : stagingBuffer.cpu) {
-        stagingData = 1.0f;
-    }
+    defer({
+        gpu::memFree(staging_A); gpu::memFree(staging_Zero);
+        gpu::memFree(d_A); gpu::memFree(d_A2); gpu::memFree(d_A3);
+        gpu::memFree(d_trace); gpu::memFree(readback_trace);
+    });
 
     auto cmd = gpu::commandsBegin();
 
-    gpu::cmdMemCpyRaw(cmd, gpuBuffer, stagingBuffer, NUM_ELEMENTS * sizeof(Float32));
-
+    // Upload A et Zero
+    gpu::cmdMemCpy(cmd, d_A, staging_A, N * N * sizeof(int));
+    gpu::cmdMemCpy(cmd, d_trace, staging_Zero, sizeof(int));
     gpu::cmdBarrier(cmd, Stage::Transfer, Stage::Compute, Hazard::None);
 
-    ComputePushConstants pc { .dataAddress = gpuBuffer.gpu };
+    // Launch of A^2 = A * A
+    gpu::cmdBindComputePipeline(cmd, pipeMatmul);
+    MatmulPC pc1 = { d_A.gpu, d_A.gpu, d_A2.gpu, N };
+    gpu::cmdPushConstantsCompute(cmd, &pc1, sizeof(pc1));
+    gpu::cmdDispatch(cmd, (N + 15) / 16, (N + 15) / 16, 1);
+    
+    gpu::cmdBarrier(cmd, Stage::Compute, Stage::Compute, Hazard::None);
 
-    gpu::cmdBindComputePipeline(cmd, pipeAdd);
-    gpu::cmdPushConstantsCompute(cmd, &pc, sizeof(pc));
-    gpu::cmdDispatch(cmd, NUM_ELEMENTS / 64, 1, 1); // 16 groupes de 64 threads = 1024
+    // Launch of A^3 = A^2 * A
+    MatmulPC pc2 = { d_A2.gpu, d_A.gpu, d_A3.gpu, N };
+    gpu::cmdPushConstantsCompute(cmd, &pc2, sizeof(pc2));
+    gpu::cmdDispatch(cmd, (N + 15) / 16, (N + 15) / 16, 1);
 
     gpu::cmdBarrier(cmd, Stage::Compute, Stage::Compute, Hazard::None);
 
-    gpu::cmdBindComputePipeline(cmd, pipeMul);
-    gpu::cmdPushConstantsCompute(cmd, &pc, sizeof(pc));
-    gpu::cmdDispatch(cmd, NUM_ELEMENTS / 64, 1, 1);
+    // Launch of trace kernel
+    gpu::cmdBindComputePipeline(cmd, pipeTrace);
+    TracePC pc3 = { d_A3.gpu, d_trace.gpu, N };
+    gpu::cmdPushConstantsCompute(cmd, &pc3, sizeof(pc3));
+    gpu::cmdDispatch(cmd, (N + 255) / 256, 1, 1);
 
     gpu::cmdBarrier(cmd, Stage::Compute, Stage::Transfer, Hazard::None);
 
-    gpu::cmdMemCpy<Float32>(cmd, readbackBuffer, gpuBuffer, NUM_ELEMENTS);
+    // load result
+    gpu::cmdMemCpy(cmd, readback_trace, d_trace, sizeof(int));
 
+    // execute the synchronization
     gpu::queueSubmit(cmd);
+    gpu::waitIdle(); // equivalent of hipDeviceSynchronize() global
 
-    gpu::waitIdle();
-
-    Slice<Float32> result = readbackBuffer.cpu;
-    
-    printf("--- RESULTATS DU COMPUTE SHADER ---\n");
-    printf("Formule  : (x + 10.0) * 2.0\n");
-    printf("Valeur initiale : 1.0f\n");
-    printf("Resultat attendu: 22.0f\n");
-    printf("-----------------------------------\n");
-    
-    printf("Resultat [0]    : %f\n", result[0]);
-    printf("Resultat [512]  : %f\n", result[512]);
-    printf("Resultat [1023] : %f\n", result[1023]);
+    int trace = readback_trace[0];
+    printf("Trace(A^3) = %d\n", trace);
+    printf("Number of triangles = %d\n", trace / 6);
 
     return 0;
 }
