@@ -101,10 +101,10 @@ namespace ctl {
             if (cache.is_valid()) {
                 cache->destroy();
             }
-            caches_.destroy();
-            capacity_ = 0;
-            size_ = 0;
         }
+        caches_.destroy();
+        capacity_ = 0;
+        size_ = 0;
     }
 
     Maybe<SlabRef> Slab::allocate() {
@@ -129,6 +129,7 @@ namespace ctl {
 	}
 	// No empty Pool in caches array, append a new Pool.
 	if (!caches_.push_back(move(*pool))) {
+            pool->destroy();
             return {};
 	}
 	return allocate();
@@ -141,6 +142,7 @@ namespace ctl {
         caches_[cache_idx]->deallocate(PoolRef { cache_ref });
 
         if (caches_[cache_idx]->is_empty()) {
+            caches_[cache_idx]->destroy(); 
             caches_[cache_idx].reset(); 
         }
 
