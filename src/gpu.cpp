@@ -1070,16 +1070,19 @@ namespace gpu {
         auto& frame = ctx.perFrames[ctx.frameIndex];
 
         vkCheck(vkWaitForFences(ctx.device, 1, &frame.fence, VK_TRUE, UINT64_MAX));
-        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
-
-        frame.commandBufferCount = 0; // On indique simplement qu'on repart de zéro
-        frame.arena.reset();
 
         VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, frame.acquireSemaphore, VK_NULL_HANDLE, &ctx.imageIndex);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        if (res == VK_ERROR_OUT_OF_DATE_KHR) {
             return false;
         }
-        vkCheck(res);
+        
+        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+            vkCheck(res);
+        }
+
+        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
+        frame.commandBufferCount = 0;
+        frame.arena.reset();
 
         outWidth = ctx.swapchain.width;
         outHeight = ctx.swapchain.height;
