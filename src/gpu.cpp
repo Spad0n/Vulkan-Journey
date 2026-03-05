@@ -526,8 +526,9 @@ namespace gpu {
     void recreateSwapchain(TemporaryAllocator& temp_alloc, Uint32 width, Uint32 height) {
         vkDeviceWaitIdle(ctx.device);
 
+        VkSwapchainKHR oldSwapchain = ctx.swapchain.handle;
+
         // reset ctx.swapchain
-        ctx.swapchain.images.reset();
         for (auto semaphore : ctx.swapchain.presentSemaphores) {
             vkDestroySemaphore(ctx.device, semaphore, nullptr);
         }
@@ -536,7 +537,7 @@ namespace gpu {
             vkDestroyImageView(ctx.device, imageView, nullptr);
         }
         ctx.swapchain.imageViews.reset();
-        vkDestroySwapchainKHR(ctx.device, ctx.swapchain.handle, nullptr);
+        ctx.swapchain.images.reset();
 
         // recreate swapchain
         VkSurfaceCapabilitiesKHR surfaceCaps{0};
@@ -552,7 +553,6 @@ namespace gpu {
 
         Array<VkSurfaceFormatKHR> surfaceFormats(temp_alloc);
         surfaceFormats.resize(surfaceFormatCount);
-
         vkCheck(vkGetPhysicalDeviceSurfaceFormatsKHR(ctx.physicalDevice, ctx.surface, &surfaceFormatCount, surfaceFormats.data()));
 
         VkSurfaceFormatKHR surfaceFormat = surfaceFormats[0];
@@ -569,7 +569,6 @@ namespace gpu {
 
         Array<VkPresentModeKHR> presentModes(temp_alloc);
         presentModes.resize(presentModeCount);
-
         vkCheck(vkGetPhysicalDeviceSurfacePresentModesKHR(ctx.physicalDevice, ctx.surface, &presentModeCount, presentModes.data()));
 
         VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
@@ -598,9 +597,14 @@ namespace gpu {
             .preTransform = surfaceCaps.currentTransform,
             .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
             .presentMode = presentMode,
-            .clipped = true
+            .clipped = true,
+            .oldSwapchain = oldSwapchain,
         };
         vkCheck(vkCreateSwapchainKHR(ctx.device, &swapchainCI, nullptr, &ctx.swapchain.handle));
+
+        if (oldSwapchain != VK_NULL_HANDLE) {
+            vkDestroySwapchainKHR(ctx.device, oldSwapchain, nullptr);
+        }
 
         vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, nullptr));
         ctx.swapchain.images.resize(imageCount);
@@ -608,6 +612,7 @@ namespace gpu {
 
         ctx.swapchain.imageViews.resize(imageCount);
         ctx.swapchain.presentSemaphores.resize(imageCount);
+
         for (Ulen i = 0; i < ctx.swapchain.images.length(); i++) {
             VkImageViewCreateInfo imageCI {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
