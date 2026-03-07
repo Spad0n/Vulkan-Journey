@@ -55,7 +55,7 @@ int main() {
     gpu::ShaderHandle fs = gpu::shaderCreate(temp_alloc, "shaders/textures.frag.spv");
     defer({ gpu::shaderDestroy(vs); gpu::shaderDestroy(fs); });
 
-    TextureFormat formats[] = { TextureFormat::RGBA8_Unorm }; // Swapchain format
+    TextureFormat formats[] = { TextureFormat::BGRA8_SRGB }; // Swapchain format
     gpu::PipelineDesc pDesc { vs, fs, formats };
     gpu::GraphicsPipelineHandle pipeline = gpu::graphicsPipelineCreate(temp_alloc, pDesc);
     defer(gpu::graphicsPipelineDestroy(pipeline));
