@@ -30,7 +30,8 @@ enum class TextureFormat {
 
 enum class AllocationType {
     Default,
-    Descriptor,
+    TextureDescriptor,
+    SamplerDescriptor,
 };
 
 enum class Memory {
@@ -163,12 +164,16 @@ namespace gpu {
     struct GraphicsPipelineTag {};
     struct ComputePipelineTag {};
     struct ShaderTag {};
+    struct TextureTag {};
+    struct SamplerTag {};
 
     using AllocHandle = Handle<AllocTag>;
     using CommandBufferHandle = Handle<CommandBufferTag>;
     using GraphicsPipelineHandle = Handle<GraphicsPipelineTag>;
     using ComputePipelineHandle = Handle<ComputePipelineTag>;
     using ShaderHandle = Handle<ShaderTag>;
+    using TextureHandle = Handle<TextureTag>;
+    using SamplerHandle = Handle<SamplerTag>;
 
     template<typename T, typename Tag>
     struct ResourcePool {
@@ -248,7 +253,7 @@ namespace gpu {
         Uint64 gpu = 0;
         AllocHandle handle;
 
-        constexpr Bool is_valid() const { return cpu != nullptr && gpu != 0; }
+        constexpr Bool is_valid() const { return gpu != 0; }
         constexpr operator Bool() const { return is_valid(); }
     };
 
@@ -258,7 +263,7 @@ namespace gpu {
         Uint64 gpu = 0;
         AllocHandle handle;
 
-        constexpr Bool is_valid() const { return cpu != nullptr && gpu != 0; }
+        constexpr Bool is_valid() const { return gpu != 0; }
         constexpr operator Bool() const { return is_valid(); }
         constexpr operator RawPtr() const { return { static_cast<void*>(cpu), gpu, handle }; }
 
@@ -272,7 +277,7 @@ namespace gpu {
         Uint64 gpu = 0;
         AllocHandle handle;
 
-        constexpr Bool is_valid() const { return !cpu.is_empty() && gpu != 0; }
+        constexpr Bool is_valid() const { return gpu != 0; }
         constexpr operator Bool() const { return is_valid(); }
         constexpr operator RawPtr() const { return { static_cast<void*>(const_cast<T*>(cpu.data())), gpu, handle }; }
 
@@ -425,15 +430,31 @@ namespace gpu {
         Uint8 colorWriteMask;
     };
 
+    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format);
+
+    void textureDestroy(TextureHandle texture);
+
+    SamplerHandle samplerCreate(void);
+
+    void samplerDestroy(SamplerHandle sampler);
+
+    void cmdCopyToTexture(CommandBufferHandle cmd, TextureHandle texture, RawPtr srcBuffer);
+
+    Uint64 getTextureDescriptorSize(void);
+
+    Uint64 getSamplerDescriptorSize(void);
+
+    void writeTextureDescriptor(RawPtr heap, Uint32 index, TextureHandle texture);
+
+    void writeSamplerDescriptor(RawPtr heap, Uint32 index, SamplerHandle sampler);
+
+    void cmdBindDescriptorHeaps(CommandBufferHandle cmd, RawPtr textureHeap, RawPtr samplerHeap);
+
     CommandBufferHandle commandsBegin(void);
 
     void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes);
 
     Arena& getFrameArena();
-
-    //[[depecrated]] CommandBufferHandle beginFrame();
-
-    //[[depecrated]] void endFrame(CommandBufferHandle cmdHandle);
 
     CommandBufferHandle commandsBegin(void);
 
@@ -444,10 +465,6 @@ namespace gpu {
     void cmdSetViewportScissor(CommandBufferHandle cmd, Uint32 width, Uint32 height);
 
     void cmdPushConstants(CommandBufferHandle cmd, const void* data, Uint32 size);
-
-    //[[depecrated]] CommandBufferHandle beginSingleTimeCommands();
-
-    //[[depecrated]] void endSingleTimeCommands(CommandBufferHandle cmd);
 
     Bool acquireNextImage(Uint32& width, Uint32& height);
 

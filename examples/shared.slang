@@ -1,3 +1,6 @@
+[[vk::binding(0, 0)]] public Texture2D textures[];
+[[vk::binding(0, 1)]] public SamplerState samplers[];
+
 public struct __PushConstants_Graphics {
     public uint64_t vertData;
     public uint64_t fragData;
@@ -17,3 +20,8 @@ public struct GraphicsPipelineData<TVertexData = void, TFragmentData = void, TDr
         get { return (TFragmentData*)__push_graphics.fragData; }
     }
 };
+
+public float4 sampleTexture(uint textureIndex, uint samplerIndex, float2 uv) {
+    return textures[NonUniformResourceIndex(textureIndex)]
+        .Sample(samplers[NonUniformResourceIndex(samplerIndex)], uv);
+}

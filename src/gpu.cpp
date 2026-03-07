@@ -23,6 +23,8 @@ static const char* VkResultToString(VkResult result) {
 
 #include "vk_convert.cpp"
 
+#define GPUDEBUG 1
+
 #define vkCheck(result) checkLocation((result), __FILE__, __LINE__)
 static inline void checkLocation(VkResult result, const char* filePath, Uint32 line) {
     if (result != VK_SUCCESS) {
@@ -76,6 +78,19 @@ struct CommandBufferInfo {
     Bool usesSwapchain = false;
 };
 
+struct TextureInfo {
+    VkImage handle;
+    VkImageView imageView;
+    VmaAllocation allocation;
+    TextureFormat format;
+    Uint32 width;
+    Uint32 height;
+};
+
+struct SamplerInfo {
+    VkSampler handle;
+};
+
 SystemAllocator sys_alloc;
 
 struct PerFrameData {
@@ -102,28 +117,52 @@ struct Context {
     Array<PerFrameData> perFrames{sys_alloc};
     Uint32 frameIndex = 0;
     Uint32 imageIndex = 0;
+    VkDescriptorSetLayout textureDescriptorLayout;
+    VkDescriptorSetLayout samplerDescriptorLayout;
+    Uint64 textureDescriptorSize = 0;
+    Uint64 samplerDescriptorSize = 0;
 
     gpu::ResourcePool<AllocInfo, gpu::AllocTag> allocs{sys_alloc};
     gpu::ResourcePool<CommandBufferInfo, gpu::CommandBufferTag> commandBuffers{sys_alloc};
     gpu::ResourcePool<ShaderInfo, gpu::ShaderTag> shaders{sys_alloc};
     gpu::ResourcePool<PipelineInfo, gpu::GraphicsPipelineTag> graphicsPipelines{sys_alloc};
     gpu::ResourcePool<PipelineInfo, gpu::ComputePipelineTag> computePipelines{sys_alloc};
+    gpu::ResourcePool<TextureInfo, gpu::TextureTag> textures{sys_alloc};
+    gpu::ResourcePool<SamplerInfo, gpu::SamplerTag> samplers{sys_alloc};
 };
 
 static Context ctx;
 
 namespace gpu {
+    static Bool getBufferAndOffset(RawPtr ptr, VkBuffer& outBuffer, VkDeviceSize& outOffset) {
+        if (!ptr.handle.is_valid()) return false;
+
+        AllocInfo* info = ctx.allocs.get(ptr.handle);
+        if (!info) return false;
+
+        outBuffer = info->handle;
+        outOffset = ptr.gpu - info->gpu;
+        return true;
+    }
+
     Bool init(TemporaryAllocator& temp_alloc, GLFWwindow *window) {
         if (volkInitialize() != VK_SUCCESS) return false;
 
         // Instance
         {
+            #if GPUDEBUG
             const char* layers[] = {
                 "VK_LAYER_KHRONOS_validation",
             };
+            #else
+            const char* layers[] = {
+            };
+            #endif
 
             Array<const char*> extensions(temp_alloc);
+            #if GPUDEBUG
             extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            #endif
 
             Uint32 instanceExtensionsCount{0};
             auto glfwExtensions = glfwGetRequiredInstanceExtensions(&instanceExtensionsCount);
@@ -146,8 +185,11 @@ namespace gpu {
 
             VkInstanceCreateInfo instanceCI {
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+                #if GPUDEBUG
                 .pNext = &debugMessengerCI,
-                //.pNext = nullptr,
+                #else
+                .pNext = nullptr,
+                #endif
                 .pApplicationInfo = &appInfo,
                 .enabledLayerCount = STATIC_LEN(layers),
                 .ppEnabledLayerNames = layers,
@@ -160,8 +202,11 @@ namespace gpu {
             volkLoadInstance(ctx.instance);
             assert(vkDestroyInstance != nullptr);
 
+            #if GPUDEBUG
             vkCheck(vkCreateDebugUtilsMessengerEXT(ctx.instance, &debugMessengerCI, nullptr, &ctx.debugMessenger));
-            //ctx.debugMessenger = nullptr;
+            #else
+            ctx.debugMessenger = nullptr;
+            #endif
         }
 
         // Creation of surface
@@ -247,6 +292,7 @@ namespace gpu {
                 .pNext = &vulkan13Features,
                 .descriptorIndexing = true,
                 .shaderSampledImageArrayNonUniformIndexing = true,
+                .descriptorBindingPartiallyBound = true,
                 .runtimeDescriptorArray = true,
                 .scalarBlockLayout = true,
                 .timelineSemaphore = true,
@@ -301,6 +347,44 @@ namespace gpu {
             vkCheck(vmaCreateAllocator(&allocatorInfo, &ctx.vmaAllocator));
         }
 
+        // descriptor size
+        {
+            VkPhysicalDeviceDescriptorBufferPropertiesEXT descBufferProps { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT };
+            VkPhysicalDeviceProperties2 props2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &descBufferProps };
+            vkGetPhysicalDeviceProperties2(ctx.physicalDevice, &props2);
+
+            ctx.textureDescriptorSize = descBufferProps.sampledImageDescriptorSize;
+            ctx.samplerDescriptorSize = descBufferProps.samplerDescriptorSize;
+
+            VkDescriptorBindingFlags bindFlag = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+            VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsCI {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                .bindingCount = 1,
+                .pBindingFlags = &bindFlag,
+            };
+
+            // --- NOUVEAU : Création des Descriptor Set Layouts (Bindless)
+            VkDescriptorSetLayoutBinding texBinding = { 0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 65536, VK_SHADER_STAGE_ALL, nullptr };
+            VkDescriptorSetLayoutCreateInfo texLayoutCI = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .pNext = &bindingFlagsCI,
+                .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+                .bindingCount = 1,
+                .pBindings = &texBinding,
+            };
+            vkCheck(vkCreateDescriptorSetLayout(ctx.device, &texLayoutCI, nullptr, &ctx.textureDescriptorLayout));
+
+            VkDescriptorSetLayoutBinding sampBinding = { 0, VK_DESCRIPTOR_TYPE_SAMPLER, 128, VK_SHADER_STAGE_ALL, nullptr };
+            VkDescriptorSetLayoutCreateInfo sampLayoutCI = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .pNext = &bindingFlagsCI,
+                .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+                .bindingCount = 1,
+                .pBindings = &sampBinding,
+            };
+            vkCheck(vkCreateDescriptorSetLayout(ctx.device, &sampLayoutCI, nullptr, &ctx.samplerDescriptorLayout));
+        }
+
         // Pipeline Layout Global Graphics
         {
             VkPushConstantRange pushConstantRange {
@@ -309,16 +393,22 @@ namespace gpu {
                 .size = 128,
             };
 
+            VkDescriptorSetLayout layouts[] = {
+                ctx.textureDescriptorLayout,
+                ctx.samplerDescriptorLayout,
+            };
+
             VkPipelineLayoutCreateInfo pipelineLayoutCI {
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                .setLayoutCount = 0, // Zero Descriptor Sets ! All its bindless.
-                .pSetLayouts = nullptr,
+                .setLayoutCount = STATIC_LEN(layouts), // Zero Descriptor Sets ! All its bindless.
+                .pSetLayouts = layouts,
                 .pushConstantRangeCount = 1,
                 .pPushConstantRanges = &pushConstantRange,
             };
 
             vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.commonPipelineLayoutGraphics));
         }
+
 
         // Pipeline Layout Global Compute
         {
@@ -347,6 +437,9 @@ namespace gpu {
 
         if (ctx.device) {
             vkDeviceWaitIdle(ctx.device);
+
+            vkDestroyDescriptorSetLayout(ctx.device, ctx.textureDescriptorLayout, nullptr);
+            vkDestroyDescriptorSetLayout(ctx.device, ctx.samplerDescriptorLayout, nullptr);
 
             for (auto& frame : ctx.perFrames) {
                 vkDestroyFence(ctx.device, frame.fence, nullptr);
@@ -382,6 +475,8 @@ namespace gpu {
         ctx.shaders.destroy();
         ctx.graphicsPipelines.destroy();
         ctx.computePipelines.destroy();
+        ctx.textures.destroy();
+        ctx.samplers.destroy();
     }
 
     void waitIdle(void) {
@@ -703,8 +798,15 @@ namespace gpu {
             }
             // TODO: raytracing part
             break;
-        case AllocationType::Descriptor:
+        case AllocationType::TextureDescriptor:
             bufUsage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT
+                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            break;
+
+        case AllocationType::SamplerDescriptor:
+            bufUsage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT
                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
                 | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                 | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -870,6 +972,7 @@ namespace gpu {
         VkGraphicsPipelineCreateInfo pipelineCI {
             .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             .pNext = &renderingInfo,
+            .flags = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
             .stageCount = (Uint32)stages.length(),
             .pStages = stages.data(),
             .pVertexInputState = &vertexInput,
@@ -999,6 +1102,175 @@ namespace gpu {
     Arena::Block Arena::allocateBlock(Uint64 requiredSize) {
         RawPtr raw = memAllocRaw(requiredSize, 1, 16, memType_, AllocationType::Default);
         return Block { raw, requiredSize };
+    }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    //////// TEXTURES /////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format) {
+        VkFormat vkFormat = toVkTextureFormat(format);
+        VkImageCreateInfo imageCI {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = vkFormat,
+            .extent = { width, height, 1 },
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+
+        VmaAllocationCreateInfo allocCI = { .usage = VMA_MEMORY_USAGE_GPU_ONLY };
+
+        VkImage image;
+        VmaAllocation allocation;
+        vkCheck(vmaCreateImage(ctx.vmaAllocator, &imageCI, &allocCI, &image, &allocation, nullptr));
+
+        VkImageViewCreateInfo viewCI {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = vkFormat,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        
+        VkImageView imageView;
+        vkCheck(vkCreateImageView(ctx.device, &viewCI, nullptr, &imageView));
+
+        return ctx.textures.add(TextureInfo{
+            image,
+            imageView,
+            allocation,
+            format,
+            width,
+            height,
+        }).value();
+    }
+
+    void textureDestroy(TextureHandle texture) {
+        auto info = ctx.textures.get(texture);
+        vkDestroyImageView(ctx.device, info->imageView, nullptr);
+        vmaDestroyImage(ctx.vmaAllocator, info->handle, info->allocation);
+    }
+
+    SamplerHandle samplerCreate(void) {
+        VkSamplerCreateInfo samplerCI {
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = VK_FILTER_LINEAR,
+            .minFilter = VK_FILTER_LINEAR,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+            .maxAnisotropy = 1.0f,
+        };
+        VkSampler sampler;
+        vkCheck(vkCreateSampler(ctx.device, &samplerCI, nullptr, &sampler));
+        return ctx.samplers.add(SamplerInfo{sampler}).value();
+    }
+
+    void samplerDestroy(SamplerHandle sampler) {
+        auto info = ctx.samplers.get(sampler);
+        vkDestroySampler(ctx.device, info->handle, nullptr);
+        ctx.samplers.remove(sampler);
+    }
+
+    void cmdCopyToTexture(CommandBufferHandle cmd, TextureHandle texture, RawPtr srcBuffer) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        auto texInfo = ctx.textures.get(texture);
+
+        VkBuffer buf = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+        if (!getBufferAndOffset(srcBuffer, buf, offset)) return;
+
+        VkImageMemoryBarrier2 barrier {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = 0,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .image = texInfo->handle,
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+
+        VkDependencyInfo depInfo { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
+        vkCmdPipelineBarrier2(cbInfo->handle, &depInfo);
+
+        VkBufferImageCopy copy = {};
+        copy.bufferOffset = offset;
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = { texInfo->width, texInfo->height, 1 };
+        vkCmdCopyBufferToImage(cbInfo->handle, buf, texInfo->handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        vkCmdPipelineBarrier2(cbInfo->handle, &depInfo);
+    }
+
+    Uint64 getTextureDescriptorSize(void) {
+        return ctx.textureDescriptorSize;
+    }
+
+    Uint64 getSamplerDescriptorSize(void) {
+        return ctx.samplerDescriptorSize;
+    }
+
+    void writeTextureDescriptor(RawPtr heap, Uint32 index, TextureHandle tex) {
+        auto texInfo = ctx.textures.get(tex);
+        VkDescriptorImageInfo imageInfo { VK_NULL_HANDLE, texInfo->imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        
+        // Initialisation explicite et propre
+        VkDescriptorGetInfoEXT getInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+            .pNext = nullptr, // On met explicitement NULL ici
+            .type  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .data  = { .pSampledImage = &imageInfo }
+        };
+        
+        void* ptr = static_cast<Uint8*>(heap.cpu) + (index * ctx.textureDescriptorSize);
+        vkGetDescriptorEXT(ctx.device, &getInfo, ctx.textureDescriptorSize, ptr);
+    }
+
+    void writeSamplerDescriptor(RawPtr heap, Uint32 index, SamplerHandle sampler) {
+        auto sampInfo = ctx.samplers.get(sampler);
+        
+        VkDescriptorGetInfoEXT getInfo = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
+            .pNext = nullptr,
+            .type  = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .data  = { .pSampler = &sampInfo->handle }
+        };
+        
+        void* ptr = static_cast<Uint8*>(heap.cpu) + (index * ctx.samplerDescriptorSize);
+        vkGetDescriptorEXT(ctx.device, &getInfo, ctx.samplerDescriptorSize, ptr);
+    }
+
+    void cmdBindDescriptorHeaps(CommandBufferHandle cmd, RawPtr textureHeap, RawPtr samplerHeap) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        
+        VkDescriptorBufferBindingInfoEXT bindings[2] = {};
+        bindings[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+        bindings[0].address = textureHeap.gpu;
+        bindings[0].usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+        
+        bindings[1].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT;
+        bindings[1].address = samplerHeap.gpu;
+        bindings[1].usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+
+        vkCmdBindDescriptorBuffersEXT(cbInfo->handle, 2, bindings);
+
+        Uint32 bufferIndices[2] = { 0, 1 };
+        VkDeviceSize offsets[2] = { 0, 0 };
+        vkCmdSetDescriptorBufferOffsetsEXT(cbInfo->handle, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx.commonPipelineLayoutGraphics, 0, 2, bufferIndices, offsets);
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -1182,16 +1454,6 @@ namespace gpu {
         vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
     }
 
-    static Bool getBufferAndOffset(RawPtr ptr, VkBuffer& outBuffer, VkDeviceSize& outOffset) {
-        if (!ptr.handle.is_valid()) return false;
-
-        AllocInfo* info = ctx.allocs.get(ptr.handle);
-        if (!info) return false;
-
-        outBuffer = info->handle;
-        outOffset = ptr.gpu - info->gpu;
-        return true;
-    }
 
     void cmdMemCpy(CommandBufferHandle cmd, RawPtr dst, RawPtr src, Uint64 bytes) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
@@ -1298,6 +1560,7 @@ namespace gpu {
     struct GraphicsPushConstants {
         Uint64 vertexData;
         Uint64 fragmentData;
+        Uint64 indirectData;
     };
 
     void cmdDrawIndexedInstanced(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, Uint32 indexCount, Uint32 instanceCount) {
@@ -1305,8 +1568,9 @@ namespace gpu {
         if (!cbInfo) return;
 
         GraphicsPushConstants pc {
-            .vertexData = vertexData.is_valid() ? vertexData.gpu : 0,
-            .fragmentData = fragmentData.is_valid() ? fragmentData.gpu : 0,
+            .vertexData = vertexData.gpu,
+            .fragmentData = fragmentData.gpu,
+            .indirectData = 0,
         };
         vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GraphicsPushConstants), &pc);
 
