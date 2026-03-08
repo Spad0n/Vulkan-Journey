@@ -28,6 +28,14 @@ enum class TextureFormat {
     EAC_RG11_Unorm,
 };
 
+enum class TextureUsage {
+    Sampled = 1 << 0,
+    DepthAttachment = 1 << 1,
+};
+
+inline TextureUsage operator|(TextureUsage a, TextureUsage b) { return static_cast<TextureUsage>(static_cast<Uint32>(a) | static_cast<Uint32>(b)); }
+inline Bool operator&(TextureUsage a, TextureUsage b) { return static_cast<Uint32>(a) & static_cast<Uint32>(b); }
+
 enum class AllocationType {
     Default,
     TextureDescriptor,
@@ -430,7 +438,7 @@ namespace gpu {
         Uint8 colorWriteMask;
     };
 
-    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format);
+    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format, TextureUsage usage = TextureUsage::Sampled);
 
     void textureDestroy(TextureHandle texture);
 
@@ -458,7 +466,7 @@ namespace gpu {
 
     CommandBufferHandle commandsBegin(void);
 
-    void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a);
+    void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a, TextureHandle depthTexture = TextureHandle{});
 
     void cmdEndRendering(CommandBufferHandle cmd);
 

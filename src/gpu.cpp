@@ -1108,8 +1108,13 @@ namespace gpu {
     //////// TEXTURES /////////////////////////////////////////////////////////////////////////////
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format) {
+    TextureHandle textureCreate(Uint32 width, Uint32 height, TextureFormat format, TextureUsage usage) {
         VkFormat vkFormat = toVkTextureFormat(format);
+
+        VkImageUsageFlags vkUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (usage & TextureUsage::Sampled) vkUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (usage & TextureUsage::DepthAttachment) vkUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
         VkImageCreateInfo imageCI {
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .imageType = VK_IMAGE_TYPE_2D,
@@ -1119,7 +1124,7 @@ namespace gpu {
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .usage = vkUsage,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
 
@@ -1129,12 +1134,14 @@ namespace gpu {
         VmaAllocation allocation;
         vkCheck(vmaCreateImage(ctx.vmaAllocator, &imageCI, &allocCI, &image, &allocation, nullptr));
 
+        VkImageAspectFlags aspect = (format == TextureFormat::D32_Float) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+
         VkImageViewCreateInfo viewCI {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = image,
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = vkFormat,
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+            .subresourceRange = { aspect, 0, 1, 0, 1 },
         };
         
         VkImageView imageView;
@@ -1152,8 +1159,10 @@ namespace gpu {
 
     void textureDestroy(TextureHandle texture) {
         auto info = ctx.textures.get(texture);
+        if (!info) return;
         vkDestroyImageView(ctx.device, info->imageView, nullptr);
         vmaDestroyImage(ctx.vmaAllocator, info->handle, info->allocation);
+        ctx.textures.remove(texture);
     }
 
     SamplerHandle samplerCreate(void) {
@@ -1382,7 +1391,7 @@ namespace gpu {
         ctx.frameIndex = (ctx.frameIndex + 1) % ctx.perFrames.length();
     }
 
-    void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a) {
+    void cmdBeginRendering(CommandBufferHandle cmd, LoadOp loadOp, StoreOp storeOp, Float32 r, Float32 g, Float32 b, Float32 a, TextureHandle depthTexture) {
         auto cbInfo = ctx.commandBuffers.get(cmd);
 
         cbInfo->usesSwapchain = true;
@@ -1402,6 +1411,27 @@ namespace gpu {
         VkDependencyInfo depInfo { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
         vkCmdPipelineBarrier2(cbInfo->handle, &depInfo);
 
+        VkImageView depthView = VK_NULL_HANDLE;
+        if (depthTexture.is_valid()) {
+            auto depthInfo = ctx.textures.get(depthTexture);
+            depthView = depthInfo->imageView;
+
+            VkImageMemoryBarrier2 depthBarrier {
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                .srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT,
+                .srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                .dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, // Optimisation
+                .newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                .image = depthInfo->handle,
+                .subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 },
+            };
+
+            VkDependencyInfo depInfoDepth { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &depthBarrier };
+            vkCmdPipelineBarrier2(cbInfo->handle, &depInfoDepth);
+        }
+
         VkRenderingAttachmentInfo colorAtt {
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
             .imageView = ctx.swapchain.imageViews[ctx.imageIndex],
@@ -1411,12 +1441,22 @@ namespace gpu {
             .clearValue = { .color = { .float32 = {r, g, b, a} } }
         };
 
+        VkRenderingAttachmentInfo depthAtt {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = depthView,
+            .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .clearValue = { .depthStencil = { 1.0f, 0 } },
+        };
+
         VkRenderingInfo renderingInfo {
             .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
             .renderArea = { {0, 0}, {ctx.swapchain.width, ctx.swapchain.height} },
             .layerCount = 1,
             .colorAttachmentCount = 1,
             .pColorAttachments = &colorAtt,
+            .pDepthAttachment = depthTexture.is_valid() ? &depthAtt : nullptr,
         };
         vkCmdBeginRendering(cbInfo->handle, &renderingInfo);
     }
