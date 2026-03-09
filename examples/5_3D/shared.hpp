@@ -41,8 +41,7 @@ struct Key_State {
 };
 
 struct Input {
-    Bool pressingRightClick = false;
-    Bool leftClickPressed = false;
+    Bool pressingLeftClick = false;
     Key_State keys[512];
     Float32 mouseDx = 0;
     Float32 mouseDy = 0;

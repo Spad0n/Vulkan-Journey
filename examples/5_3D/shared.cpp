@@ -79,9 +79,9 @@ bool loadSceneGltf(const char* path, ctl::Allocator& alloc, Scene& out_scene) {
         glm::mat4 global_xform = parent_xform * local_xform;
 
         if (node->mesh) {
-            int gltf_mesh_idx = -1;
+            Sint32 gltf_mesh_idx = -1;
             for(Ulen i=0; i<data->meshes_count; ++i) {
-                if(&data->meshes[i] == node->mesh) { gltf_mesh_idx = (int)i; break; }
+                if(&data->meshes[i] == node->mesh) { gltf_mesh_idx = (Sint32)i; break; }
             }
             
             if (gltf_mesh_idx != -1) {
@@ -116,13 +116,12 @@ bool loadSceneGltf(const char* path, ctl::Allocator& alloc, Scene& out_scene) {
 }
 
 bool handleWindowEvents(GLFWwindow* window) {
-    for (int i = 0; i < 512; ++i) {
+    for (Sint32 i = 0; i < 512; ++i) {
         G_INPUT.keys[i].pressed = false;
         G_INPUT.keys[i].released = false;
     }
     G_INPUT.mouseDx = 0;
     G_INPUT.mouseDy = 0;
-    G_INPUT.leftClickPressed = false;
 
     glfwPollEvents();
     if (glfwWindowShouldClose(window)) return false;
@@ -139,9 +138,9 @@ bool handleWindowEvents(GLFWwindow* window) {
     G_INPUT.lastMouseX = mx;
     G_INPUT.lastMouseY = my;
 
-    G_INPUT.pressingRightClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    G_INPUT.pressingLeftClick = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     
-    auto update_key = [&](int glfw_key) {
+    auto update_key = [&](Sint32 glfw_key) {
         bool down = glfwGetKey(window, glfw_key) == GLFW_PRESS;
         Key_State& s = G_INPUT.keys[glfw_key];
         if (down && !s.pressing) s.pressed = true;
@@ -163,7 +162,7 @@ glm::mat4 firstPersonCameraView(Float32 delta_time) {
 
     Float32 mouseSensitivity = glm::radians(0.2f); 
 
-    if (G_INPUT.pressingRightClick) {
+    if (G_INPUT.pressingLeftClick) {
         angle.x += G_INPUT.mouseDx * mouseSensitivity;
         angle.y += G_INPUT.mouseDy * mouseSensitivity;
     }
@@ -183,10 +182,10 @@ glm::mat4 firstPersonCameraView(Float32 delta_time) {
     glm::vec3 keyboard_dir_xz(0.0f);
     Float32 keyboard_dir_y = 0.0f;
 
-    if (G_INPUT.pressingRightClick) {
-        keyboard_dir_xz.x = (Float32)((int)G_INPUT.keys[GLFW_KEY_D].pressing - (int)G_INPUT.keys[GLFW_KEY_A].pressing);
-        keyboard_dir_xz.z = (Float32)((int)G_INPUT.keys[GLFW_KEY_W].pressing - (int)G_INPUT.keys[GLFW_KEY_S].pressing);
-        keyboard_dir_y    = (Float32)((int)G_INPUT.keys[GLFW_KEY_E].pressing - (int)G_INPUT.keys[GLFW_KEY_Q].pressing);
+    if (G_INPUT.pressingLeftClick) {
+        keyboard_dir_xz.x = (Float32)((Sint32)G_INPUT.keys[GLFW_KEY_D].pressing - (Sint32)G_INPUT.keys[GLFW_KEY_A].pressing);
+        keyboard_dir_xz.z = (Float32)((Sint32)G_INPUT.keys[GLFW_KEY_W].pressing - (Sint32)G_INPUT.keys[GLFW_KEY_S].pressing);
+        keyboard_dir_y    = (Float32)((Sint32)G_INPUT.keys[GLFW_KEY_E].pressing - (Sint32)G_INPUT.keys[GLFW_KEY_Q].pressing);
 
         if (glm::dot(keyboard_dir_xz, keyboard_dir_xz) > 1.0f) {
             keyboard_dir_xz = glm::normalize(keyboard_dir_xz);
