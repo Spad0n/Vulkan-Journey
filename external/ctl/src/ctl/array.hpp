@@ -90,7 +90,10 @@ namespace ctl {
             for (Ulen i = 0; i < length_; i++) {
                 new (data + i, Nat{}) T{move(data_[i])};
             }
-            destroy();
+            if (data_) {
+                allocator_.deallocate(data_, capacity_);
+            }
+            drop();
             data_ = data;
             capacity_ = capacity;
             return true;
@@ -248,6 +251,11 @@ namespace ctl {
                 }
             }
 	}
+
+        void drop(void) {
+            destruct();
+            allocator_.deallocate(data_, capacity_);
+        }
 
 	T*         data_     = nullptr;
 	Ulen       length_   = 0;
