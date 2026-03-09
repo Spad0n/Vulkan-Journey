@@ -53,3 +53,8 @@ add_custom_command(
           ${CMAKE_CURRENT_SOURCE_DIR}/3_textures/textures
           $<TARGET_FILE_DIR:3_textures>/textures
 )
+
+add_executable(4_indirect_triangles 4_indirect_triangles/main.cpp)
+target_link_libraries(4_indirect_triangles PRIVATE project_core)
+compile_slang_shader_graphics(4_indirect_triangles 4_indirect_triangles/shaders/shader.slang vertexMain indirect.vert.spv)
+compile_slang_shader_graphics(4_indirect_triangles 4_indirect_triangles/shaders/shader.slang fragmentMain indirect.frag.spv)

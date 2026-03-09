@@ -290,6 +290,7 @@ namespace gpu {
             VkPhysicalDeviceVulkan12Features vulkan12Features {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                 .pNext = &vulkan13Features,
+                .drawIndirectCount = true,
                 .descriptorIndexing = true,
                 .shaderSampledImageArrayNonUniformIndexing = true,
                 .descriptorBindingPartiallyBound = true,
@@ -1573,12 +1574,18 @@ namespace gpu {
         barrier.srcStageMask = toVkStage(before);
         barrier.dstStageMask = toVkStage(after);
 
-        if (hazards & Hazard::DrawArguments) {
+        if (before == Stage::Transfer) {
+            barrier.srcAccessMask |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        } else {
             barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
+        }
+
+        if (hazards & Hazard::DrawArguments) {
+            //barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
             barrier.dstAccessMask |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
         }
         if (hazards & Hazard::Descriptors) {
-            barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
+            //barrier.srcAccessMask |= VK_ACCESS_2_SHADER_WRITE_BIT;
             barrier.dstAccessMask |= VK_ACCESS_2_SHADER_READ_BIT;
         }
         if (hazards & Hazard::DepthStencil) {
@@ -1621,6 +1628,63 @@ namespace gpu {
             vkCmdDrawIndexed(cbInfo->handle, indexCount, instanceCount, 0, 0, 0);
         } else {
             vkCmdDraw(cbInfo->handle, indexCount, instanceCount, 0, 0);
+        }
+    }
+
+    void cmdDrawIndexedInstancedIndirect(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, RawPtr indirectArguments) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        if (!cbInfo) return;
+
+        GraphicsPushConstants pc {
+            .vertexData = vertexData.gpu,
+            .fragmentData = fragmentData.gpu,
+            .indirectData = indirectArguments.gpu,
+        };
+        vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GraphicsPushConstants), &pc);
+
+        VkBuffer idxBuffer;
+        VkDeviceSize idxOffset;
+        if (getBufferAndOffset(indices, idxBuffer, idxOffset)) {
+            vkCmdBindIndexBuffer(cbInfo->handle, idxBuffer, idxOffset, VK_INDEX_TYPE_UINT32);
+        }
+
+        VkBuffer argsBuffer;
+        VkDeviceSize argsOffset;
+        if (getBufferAndOffset(indirectArguments, argsBuffer, argsOffset)) {
+            vkCmdDrawIndexedIndirect(cbInfo->handle, argsBuffer, argsOffset, 1, 0);
+        }
+    }
+
+    void cmdDrawIndexedInstancedIndirectMulti(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, RawPtr indirectArguments, Uint32 stride, RawPtr drawCount) {
+        auto cbInfo = ctx.commandBuffers.get(cmd);
+        if (!cbInfo) return;
+
+        GraphicsPushConstants pc {
+            .vertexData = vertexData.gpu,
+            .fragmentData = fragmentData.gpu,
+            .indirectData = indirectArguments.gpu,
+        };
+        vkCmdPushConstants(cbInfo->handle, ctx.commonPipelineLayoutGraphics, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GraphicsPushConstants), &pc);
+
+        VkBuffer idxBuffer;
+        VkDeviceSize idxOffset;
+        if (getBufferAndOffset(indices, idxBuffer, idxOffset)) {
+            vkCmdBindIndexBuffer(cbInfo->handle, idxBuffer, idxOffset, VK_INDEX_TYPE_UINT32);
+        }
+
+        VkBuffer argsBuffer;
+        VkDeviceSize argsOffset;
+        VkBuffer countBuffer;
+        VkDeviceSize countOffset;
+
+        if (getBufferAndOffset(indirectArguments, argsBuffer, argsOffset) && getBufferAndOffset(drawCount, countBuffer, countOffset)) {
+            Uint32 maxDrawCount = 0xFFFFFFFF;
+            AllocInfo* argsInfo = ctx.allocs.get(indirectArguments.handle);
+            if (argsInfo) {
+                VkDeviceSize availableSize = argsInfo->bufferSize - argsOffset;
+                maxDrawCount = static_cast<Uint32>(availableSize / stride);
+            }
+            vkCmdDrawIndexedIndirectCount(cbInfo->handle, argsBuffer, argsOffset, countBuffer, countOffset, maxDrawCount, stride);
         }
     }
 }

@@ -491,6 +491,18 @@ namespace gpu {
     void cmdBarrier(CommandBufferHandle cmd, Stage before, Stage after, Hazard hazards = Hazard::None);
 
     void cmdDrawIndexedInstanced(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, Uint32 indexCount, Uint32 instanceCount);
+
+    struct DrawIndexedIndirectCommand {
+        Uint32 indexCount;
+        Uint32 instanceCount;
+        Uint32 firstIndex;
+        Sint32 vertexOffset;
+        Uint32 firstInstance;
+    };
+
+    void cmdDrawIndexedInstancedIndirect(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, RawPtr indirectArguments);
+
+    void cmdDrawIndexedInstancedIndirectMulti(CommandBufferHandle cmd, RawPtr vertexData, RawPtr fragmentData, RawPtr indices, RawPtr indirectArguments, Uint32 stride, RawPtr drawCount);
 }
 
 #endif // GPU_HPP
