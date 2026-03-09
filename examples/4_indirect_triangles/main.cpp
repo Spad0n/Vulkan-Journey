@@ -1,11 +1,15 @@
 #include <GLFW/glfw3.h>
 #include <stdio.h>
-#include <math.h>
-#include <vector>
 #include "ctl/allocator.hpp"
 #include "macro_utils.hpp"
 #include "glm/glm.hpp"
 #include "gpu.hpp"
+
+#if defined(_WIN32) || defined(_WIN64)
+#define _USE_MATH_DEFINES
+#endif
+
+#include <math.h>
 
 using namespace ctl;
 
