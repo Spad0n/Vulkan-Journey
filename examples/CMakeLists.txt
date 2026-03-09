@@ -54,7 +54,20 @@ add_custom_command(
           $<TARGET_FILE_DIR:3_textures>/textures
 )
 
+
 add_executable(4_indirect_triangles 4_indirect_triangles/main.cpp)
 target_link_libraries(4_indirect_triangles PRIVATE project_core)
 compile_slang_shader_graphics(4_indirect_triangles 4_indirect_triangles/shaders/shader.slang vertexMain indirect.vert.spv)
 compile_slang_shader_graphics(4_indirect_triangles 4_indirect_triangles/shaders/shader.slang fragmentMain indirect.frag.spv)
+
+add_executable(5_3D 5_3D/main.cpp 5_3D/shared.cpp)
+target_link_libraries(5_3D PRIVATE project_core)
+compile_slang_shader_graphics(5_3D 5_3D/shaders/shader.slang vertexMain 3D.vert.spv)
+compile_slang_shader_graphics(5_3D 5_3D/shaders/shader.slang fragmentMain 3D.frag.spv)
+add_custom_command(
+  TARGET 5_3D POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_CURRENT_SOURCE_DIR}/5_3D/assets
+          $<TARGET_FILE_DIR:5_3D>/assets
+)
+
