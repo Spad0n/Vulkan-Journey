@@ -24,7 +24,7 @@ struct MeshGPU {
 };
 
 int main() {
-    printf("Right-click + WASD for first-person controls.\n");
+    printf("Left-click + WASD for first-person controls.\n");
 
     if (!glfwInit()) return -1;
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
