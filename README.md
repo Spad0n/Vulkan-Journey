@@ -14,7 +14,8 @@ This project is heavily inspired by Sebastian Aaltonen's blog post ["No Graphics
 ### 1. Hello Triangle
 ![Triangle](./screenshots/triangle.png)
 
-### 2. Compute Shader
+### 2. Compute Shader (Graph Analytics)
+Beyond rendering: this sample computes the total number of triangles in a undirected graph using its adjacency matrix $A$. 
 ![Compute Shader](./screenshots/compute.png)
 output:
 ```
