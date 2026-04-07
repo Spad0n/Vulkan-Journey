@@ -2,6 +2,9 @@
 #define CTL_TRAITS_HPP
 #include "types.hpp"
 
+/// @namespace ctl
+/// @note This module relies on compiler builtins (__is_construtible, etc)
+/// for performance and simplicity
 namespace ctl {
 
     template<typename T> struct RemoveReference_      { using Type = T; };
@@ -12,6 +15,7 @@ namespace ctl {
     template<typename T>
     using RemoveReference = typename RemoveReference_<T>::Type;
 
+    /// @brief checks if T can form a reference type (T& is valid).
     template<typename T>
     concept Referenceable = requires {
 	typename Identity<T&>;
@@ -88,6 +92,56 @@ namespace ctl {
     /// @brief Utility to obtain a reference to T in unevaluated contexts.
     template<typename T> AddLValueReference<T> declval();
 
+    // --- RemoveConst / RemoveVolatile
+    template<typename T> struct RemoveConst_ { using Type = T; };
+    template<typename T> struct RemoveConst_<const T> { using Type = T; };
+
+    template<typename T>
+    using RemoveConst = typename RemoveConst_<T>::Type;
+
+    template<typename T> struct RemoveVolatile_ { using Type = T; };
+    template<typename T> struct RemoveVolatile_<volatile T> { using Type = T; };
+
+    template<typename T>
+    using RemoveVolatile = typename RemoveVolatile_<T>::Type;
+
+    // --- RemoveCV / RemoveCVRef
+    template<typename T>
+    using RemoveCV = RemoveConst<RemoveVolatile<T>>;
+
+    /// @brief Removes const, volatile qualifiers and references from T.
+    template<typename T>
+    using RemoveCVRef = RemoveCV<RemoveReference<T>>;
+
+    // --- Integral ---
+    template<typename T>
+    inline constexpr bool IsIntegralBase = false;
+
+    template<> inline constexpr bool IsIntegralBase<Uint8>  = true;
+    template<> inline constexpr bool IsIntegralBase<Sint8>  = true;
+    template<> inline constexpr bool IsIntegralBase<Uint16> = true;
+    template<> inline constexpr bool IsIntegralBase<Sint16> = true;
+    template<> inline constexpr bool IsIntegralBase<Uint32> = true;
+    template<> inline constexpr bool IsIntegralBase<Sint32> = true;
+    template<> inline constexpr bool IsIntegralBase<Uint64> = true;
+    template<> inline constexpr bool IsIntegralBase<Sint64> = true;
+
+    /// @brief Concept satisfied by custom integral types (signed and unsigned integers).
+    template<typename T>
+    concept Integral = IsIntegralBase<RemoveCVRef<T>>;
+
+    // --- Numeric ---
+    template<typename T>
+    inline constexpr bool IsNumericBase = IsIntegralBase<T>;
+
+    template<> inline constexpr bool IsNumericBase<Float32> = true;
+    template<> inline constexpr bool IsNumericBase<Float64> = true;
+
+    /// @brief Concept satisfied by custom numeric types (integers and floating-point types)
+    /// defined in this module (e.g, Uint32, Sint32, Float32, Float64).
+    template<typename T>
+    concept Numeric = IsNumericBase<RemoveCVRef<T>>;
+        
 } // namespace ctl
 
 #endif // CTL_TRAITS_HPP

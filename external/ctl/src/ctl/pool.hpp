@@ -41,6 +41,7 @@ namespace ctl {
 
 	Pool(Pool&& other);
 
+        /// @brief Destroys elements and deallocates memory.
         void destroy();
 
         /// @brief Returns the number of active objects in the pool.

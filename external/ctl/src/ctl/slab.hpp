@@ -32,6 +32,7 @@ namespace ctl {
         /// @brief Saves the Slab to a stream.
 	Bool save(Stream& stream) const;
 
+        /// @brief Destroys elements and deallocates memory.
         void destroy();
 
         /// @brief Allocates a new object. Automatically grows if necessary.

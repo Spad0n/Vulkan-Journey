@@ -178,10 +178,10 @@ namespace ctl {
             Block(Ulen length)
                 : arena_{reinterpret_cast<Address>(data_), length}
             {}
-            ArenaAllocator arena_;
-            Block*         prev_ = nullptr;
-            Block*         next_ = nullptr;
-            Uint8          data_[];
+            ArenaAllocator    arena_;
+            Block*            prev_ = nullptr;
+            Block*            next_ = nullptr;
+            alignas(16) Uint8 data_[];
 	};
 	Allocator& allocator_;
 	Block*     head_ = nullptr;

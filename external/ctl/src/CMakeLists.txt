@@ -61,3 +61,8 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_link_options(ctl PUBLIC "-nostdlib++")
   endif()
 endif()
+
+if(USE_ASAN AND TARGET asan_config)
+  target_link_libraries(ctl PRIVATE asan_config)
+  target_compile_definitions(ctl PRIVATE CTL_USE_ASAN=1)
+endif()

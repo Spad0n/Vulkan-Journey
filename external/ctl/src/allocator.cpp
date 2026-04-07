@@ -194,6 +194,10 @@ namespace ctl {
 	if (const auto addr = tail_->arena_.alloc(new_len, zero)) {
             return addr;
 	}
+        if (tail_->next_) {
+            tail_ = tail_->next_;
+            return alloc(new_len, zero);
+        }
 	if (!add(new_len)) {
             return 0;
 	}
