@@ -190,11 +190,6 @@ namespace gpu {
             , generations_{allocator}
         {}
 
-        void destroy() {
-            slab_.destroy();
-            generations_.destroy();
-        }
-
         template<typename U>
         Maybe<Handle<Tag>> add(U&& item) {
             if (auto ref = slab_.allocate()) {

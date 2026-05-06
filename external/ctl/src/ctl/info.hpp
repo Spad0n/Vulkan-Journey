@@ -21,8 +21,24 @@
 #elif defined(__APPLE__) && defined(__MACH__)
     #define CTL_HOST_PLATFORM_MACOS
     #define CTL_HOST_PLATFORM_POSIX
+#elif defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
+    #define CTL_HOST_PLATFORM_WASM
 #else
     #error Unsupported platform
+#endif
+
+#if defined(__SIZEOF_POINTER__)
+    #if __SIZEOF_POINTER__ == 4
+        #define CTL_ARCH_32BIT
+    #elif __SIZEOF_POINTER__ == 8
+        #define CTL_ARCH_64BIT
+    #else
+        #error Unsupported pointer size
+    #endif
+#elif defined(_WIN64) || defined(__x86_64__) || defined(__aarch64__) || defined(__wasm64__)
+    #define CTL_ARCH_64BIT
+#else
+    #define CTL_ARCH_32BIT
 #endif
 
 #if defined(CTL_COMPILER_CLANG) || defined(CTL_COMPILER_GCC)
@@ -55,5 +71,27 @@
 
 // These are debug build options
 //#define CTL_CFG_USE_MALLOC 1
+
+#if defined(__wasm__) || defined(__wasm32__) || defined(__wasm64__)
+    #define CTL_ARCH_WASM
+#elif defined(__x86_64__) || defined(_M_X64)
+    #define CTL_ARCH_X64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #define CTL_ARCH_ARM64
+#endif
+
+#if defined(CTL_HOST_PLATFORM_WASM) && defined(CTL_COMPILER_CLANG)
+    #define CTL_WASM_IMPORT(mod, name) __attribute__((import_module(#mod), import_name(#name)))
+    #define CTL_WASM_EXPORT extern "C" __attribute__((visibility("default")))
+#else
+    #define CTL_WASM_IMPORT(mod, name)
+    #define CTL_WASM_EXPORT
+#endif
+
+#if defined(CTL_COMPILER_GCC) || defined(CTL_COMPILER_CLANG)
+    #define CTL_FORMAT_PRINTF(fmt_idx, args_idx) __attribute__((format(printf, fmt_idx, args_idx)))
+#else
+    #define CTL_FORMAT_PRINTF(fmt_idx, args_idx)
+#endif
 
 #endif // CTL_INFO_H

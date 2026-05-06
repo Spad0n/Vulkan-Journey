@@ -50,8 +50,8 @@ namespace ctl {
 	if (header.version != 1) {
             return {};
 	}
-	const auto n_words = header.capacity / BITS;
-	const auto n_bytes = header.size * header.capacity;
+	const auto n_words = static_cast<Ulen>(header.capacity / BITS);
+	const auto n_bytes = static_cast<Ulen>(header.size * header.capacity);
 	auto used = allocator.allocate<Word>(n_words, false);
 	auto data = allocator.allocate<Uint8>(n_bytes, false);
 	if (!used || !data) {
@@ -105,23 +105,7 @@ namespace ctl {
 	, data_{exchange(other.data_, nullptr)}
 	, used_{exchange(other.used_, nullptr)}
 	, last_{exchange(other.last_, 0)}
-    {
-    }
-
-    void Pool::destroy() {
-        if (data_) {
-            allocator_.deallocate(data_, size_ * capacity_);
-            data_ = nullptr;
-        }
-
-        if (used_) {
-            allocator_.deallocate(used_, capacity_ / BITS);
-            used_ = nullptr;
-        }
-        capacity_ = 0;
-        size_ = 0;
-        length_ = 0;
-    }
+    {}
 
 #if defined(CTL_COMPILER_MSVC)
 

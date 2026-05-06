@@ -62,7 +62,17 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   endif()
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  target_compile_options(ctl PUBLIC
+    -nostdlibinc  # no system headers, but only use builtin clang
+    -msimd128     # active <wasm_simd128.h> for allocator.cpp
+    -mbulk-memory # active memory.fill / memory.copy
+  )
+  #target_compile_definitions(ctl PUBLIC CTL_HOST_PLATFORM_WASM)
+endif()
+
 if(USE_ASAN AND TARGET asan_config)
   target_link_libraries(ctl PRIVATE asan_config)
   target_compile_definitions(ctl PRIVATE CTL_USE_ASAN=1)
+  target_compile_definitions(ctl PRIVATE CTL_CFG_USE_MALLOC=1)
 endif()

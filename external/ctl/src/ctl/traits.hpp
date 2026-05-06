@@ -3,8 +3,8 @@
 #include "types.hpp"
 
 /// @namespace ctl
-/// @note This module relies on compiler builtins (__is_construtible, etc)
-/// for performance and simplicity
+/// @note This module relies on compiler buitins (__is_constructible, etc)
+/// for performance and simplicity.
 namespace ctl {
 
     template<typename T> struct RemoveReference_      { using Type = T; };
@@ -80,11 +80,6 @@ namespace ctl {
     ([] { static_assert(false, "Cannot implement is_trivially_destructible"); }, false);
 #endif
 
-    template<typename T>
-    concept HasDestroyMethod = requires(T& t) {
-        { t.destroy() };
-    };
-
     /// @brief Concept ensuring T has a trivial destructor (no-op).
     template<typename T>
     concept TriviallyDestructible = is_trivially_destructible<T>;
@@ -93,19 +88,19 @@ namespace ctl {
     template<typename T> AddLValueReference<T> declval();
 
     // --- RemoveConst / RemoveVolatile
-    template<typename T> struct RemoveConst_ { using Type = T; };
+    template<typename T> struct RemoveConst_          { using Type = T; };
     template<typename T> struct RemoveConst_<const T> { using Type = T; };
 
     template<typename T>
     using RemoveConst = typename RemoveConst_<T>::Type;
 
-    template<typename T> struct RemoveVolatile_ { using Type = T; };
+    template<typename T> struct RemoveVolatile_             { using Type = T; };
     template<typename T> struct RemoveVolatile_<volatile T> { using Type = T; };
 
     template<typename T>
     using RemoveVolatile = typename RemoveVolatile_<T>::Type;
 
-    // --- RemoveCV / RemoveCVRef
+    // --- RemoveCV / RemoveCVRef ---
     template<typename T>
     using RemoveCV = RemoveConst<RemoveVolatile<T>>;
 
@@ -134,14 +129,14 @@ namespace ctl {
     template<typename T>
     inline constexpr bool IsNumericBase = IsIntegralBase<T>;
 
-    template<> inline constexpr bool IsNumericBase<Float32> = true;
     template<> inline constexpr bool IsNumericBase<Float64> = true;
+    template<> inline constexpr bool IsNumericBase<Float32> = true;
 
     /// @brief Concept satisfied by custom numeric types (integers and floating-point types)
     /// defined in this module (e.g, Uint32, Sint32, Float32, Float64).
     template<typename T>
     concept Numeric = IsNumericBase<RemoveCVRef<T>>;
-        
+
 } // namespace ctl
 
 #endif // CTL_TRAITS_HPP

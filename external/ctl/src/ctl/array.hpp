@@ -38,12 +38,14 @@ namespace ctl {
         // Copying is disabled to prevent implicit allocations. Use `copy()` instead.
 	constexpr Array(const Array&) = delete;
 
+        ~Array() { drop(); }
+
 	Array& operator=(const Array&) = delete;
 
         /// @brief Move assignment operator.
         /// Destroys the current content and takes ownership of `other`.
 	Array& operator=(Array&& other) {
-            return *new (destroy(), Nat{}) Array{move(other)};
+            return *new (drop(), Nat{}) Array{move(other)};
 	}
 
         /// @brief Resizes the array to contain `length` elements.
@@ -55,12 +57,8 @@ namespace ctl {
 	Bool resize(Ulen length) {
             if (length < length_) {
                 if constexpr (!TriviallyDestructible<T>) {
-                    for (Ulen i = length_ - 1; i > length; i--) {
-                        data_[i].~T();
-                    }
-                } else if constexpr (HasDestroyMethod<T>) {
-                    for (Ulen i = length_ - 1; i > length; i--) {
-                        data_[i].destroy();
+                    for (Ulen i = length_; i > length; i--) {
+                        data_[i - 1].~T();
                     }
                 }
             } else if (length > length_) {
@@ -151,15 +149,18 @@ namespace ctl {
             if (!result.reserve(length_)) {
                 return {};
             }
-            for (Ulen i = length_; i < length_; i++) {
+            for (Ulen i = 0; i < length_; i++) {
                 if constexpr (CopyConstructible<T>) {
                     new (result.data_ + i, Nat{}) T{data_[i]}; // Call the copy constructor
+                    result.length_++;
                 } else if constexpr (MaybeCopyable<T>) {
-                    if (auto copied = data_[i].copy()) {
-                        new (result.data_ + i, Nat{}) T{move(*copied)};
+                    auto copied = data_[i].copy(allocator);
+                    if (!copied) {
+                        return {};
                     }
+                    new (result.data_ + i, Nat{}) T{move(*copied)};
+                    result.length_++;
                 }
-                result.length_++;
             }
             return result;
 	}
@@ -168,8 +169,6 @@ namespace ctl {
 	void pop_back() {
             if constexpr (!TriviallyDestructible<T>) {
                 data_[length_ - 1].~T();
-            } else if constexpr (HasDestroyMethod<T>) {
-                data_[length_ - 1].destroy();
             }
             length_--;
 	}
@@ -178,10 +177,8 @@ namespace ctl {
 	void pop_front() {
             if constexpr (!TriviallyDestructible<T>) {
                 data_[0].~T();
-            } else if constexpr (HasDestroyMethod<T>) {
-                data_[0].destroy();
             }
-            for (Ulen i = 1; i < length_; i--) {
+            for (Ulen i = 1; i < length_; i++) {
                 data_[i - 1] = move(data_[i]);
             }
             length_--;
@@ -195,7 +192,7 @@ namespace ctl {
 
         /// @brief Destroys all elements and releases the memory to the allocator.
 	void reset() {
-            destroy();
+            drop();
             length_ = 0;
             capacity_ = 0;
 	}
@@ -228,38 +225,20 @@ namespace ctl {
 	[[nodiscard]] CTL_FORCEINLINE constexpr T* end() { return data_ + length_; }
 	[[nodiscard]] CTL_FORCEINLINE constexpr const T* end() const { return data_ + length_; }
 
-        /// @brief Destroys elements and deallocates memory.
-        /// @return `this` pointer (used for placement new idioms in move ops).
-	Array* destroy() {
-            destruct();
-            allocator_.deallocate(data_, capacity_);
-            data_ = nullptr;
-            length_ = 0;
-            capacity_ = 0;
-            return this;
-	}
-
     private:
         /// @brief Helper to call destructors on all active elements.
 	void destruct() {
-            if constexpr(HasDestroyMethod<T> || !TriviallyDestructible<T>) {
+            if constexpr (!TriviallyDestructible<T>) {
                 for (Ulen i = length_; i > 0; i--) {
-                    T& item = data_[i - 1];
-
-                    if constexpr(HasDestroyMethod<T>) {
-                        item.destroy();
-                    }
-
-                    if constexpr(!TriviallyDestructible<T>) {
-                        item.~T();
-                    }
+                    data_[i - 1].~T();
                 }
             }
 	}
 
-        void drop() {
+        Array* drop() {
             destruct();
             allocator_.deallocate(data_, capacity_);
+            return this;
         }
 
 	T*         data_     = nullptr;

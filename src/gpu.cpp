@@ -447,9 +447,7 @@ namespace gpu {
                 vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
                 vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
                 frame.arena.destroy();
-                frame.commandBuffers.destroy();
             }
-            ctx.perFrames.destroy();
 
             if (ctx.vmaAllocator) {
                 vmaDestroyAllocator(ctx.vmaAllocator);
@@ -470,14 +468,6 @@ namespace gpu {
         if (ctx.instance) {
             vkDestroyInstance(ctx.instance, nullptr);
         }
-
-        ctx.allocs.destroy();
-        ctx.commandBuffers.destroy();
-        ctx.shaders.destroy();
-        ctx.graphicsPipelines.destroy();
-        ctx.computePipelines.destroy();
-        ctx.textures.destroy();
-        ctx.samplers.destroy();
     }
 
     void waitIdle(void) {
@@ -581,15 +571,12 @@ namespace gpu {
     }
 
     void destroySwapchain(Swapchain& swapchain) {
-        swapchain.images.destroy();
         for (auto semaphore : swapchain.presentSemaphores) {
             vkDestroySemaphore(ctx.device, semaphore, nullptr);
         }
-        swapchain.presentSemaphores.destroy();
         for (auto imageView : swapchain.imageViews) {
             vkDestroyImageView(ctx.device, imageView, nullptr);
         }
-        swapchain.imageViews.destroy();
         vkDestroySwapchainKHR(ctx.device, swapchain.handle, nullptr);
     }
 
@@ -1057,7 +1044,6 @@ namespace gpu {
         for (auto& block : blocks_) {
             memFreeRaw(block.ptr);
         }
-        blocks_.destroy();
     }
 
     void Arena::reset() {

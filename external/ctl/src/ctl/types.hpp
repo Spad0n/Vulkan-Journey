@@ -25,10 +25,17 @@ namespace ctl {
     using Ulen = decltype(sizeof 0);
     using Bool = bool;
 
+#if defined(CTL_ARCH_32BIT)
+    /// @brief Raw memory address.
+    using Address = unsigned int; // == uintptr_t on wasm32 / x86
+#else
     /// @brief Raw memory address.
     using Address = unsigned long long;
+#endif
     using Hash = Uint64;
     using Unit = struct {};
+
+    static_assert(sizeof(Address) == sizeof(void*), "Address must match pointer size");
 
     constexpr Uint8 operator""_u8(unsigned long long int v) { return static_cast<Uint8>(v); }
     constexpr Uint16 operator""_u16(unsigned long long int v) { return static_cast<Uint16>(v); }

@@ -63,13 +63,8 @@ int main() {
         printf("Failed to load Sponza\n");
         return -1;
     }
-    defer({
-        scene.meshes.destroy();
-        scene.instances.destroy();
-    });
 
     Array<MeshGPU> meshesGPU(sysAlloc);
-    defer(meshesGPU.destroy());
     auto uploadCmd = gpu::commandsBegin();
     
     for (auto& meshCPU : scene.meshes) {

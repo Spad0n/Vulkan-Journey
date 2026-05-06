@@ -126,7 +126,7 @@ namespace ctl {
 #else
 	auto addr = mmap(nullptr,
 	                 length,
-	                 PROT_WRITE,
+	                 PROT_READ | PROT_WRITE,
 	                 MAP_PRIVATE | MAP_ANONYMOUS,
 	                 -1,
 	                 0);
