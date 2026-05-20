@@ -109,7 +109,6 @@ bool loadSceneGltf(const char* path, ctl::Allocator& alloc, Scene& out_scene) {
         process_node(process_node, data->scene->nodes[i], glm::mat4(1.0f));
     }
 
-    mesh_start_indices.reset();
     cgltf_free(data);
     printf("Loaded %llu meshes and %llu instances.\n", out_scene.meshes.length(), out_scene.instances.length());
     return true;

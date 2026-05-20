@@ -11,6 +11,13 @@
 #include "vk_mem_alloc.h"
 #include "gpu.hpp"
 
+// TODO: present() doesn't handle the result of vkQueuePresentKHR like OUT_OF_DATE/SUBOPTIMAL
+// TODO: acquireNextImage() use silently SUBOPTIMAL
+// TODO: cmdBarrier() put VK_ACCESS_2_SHADER_WRITE_BIT by default for
+// all that are not Transfer. For Stage::RasterColorOut should maybe
+// be VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT. A table Stage -> access mask instead of if/else maybe more relevant
+// TODO: cmdBindDescriptorsHeap() bind only for graphics, not for compute
+
 using namespace ctl;
 
 static const char* VkResultToString(VkResult result) {
@@ -94,8 +101,8 @@ struct SamplerInfo {
 SystemAllocator sys_alloc;
 
 struct PerFrameData {
-    VkFence fence;
     VkSemaphore acquireSemaphore;
+    Uint64 lastSubmitValue = 0;
     VkCommandPool commandPool;
     Array<gpu::CommandBufferHandle> commandBuffers{sys_alloc};
     Uint32 commandBufferCount = 0;
@@ -121,6 +128,9 @@ struct Context {
     VkDescriptorSetLayout samplerDescriptorLayout;
     Uint64 textureDescriptorSize = 0;
     Uint64 samplerDescriptorSize = 0;
+
+    VkSemaphore frameTimeline;
+    Uint64      frameValue = 0;
 
     gpu::ResourcePool<AllocInfo, gpu::AllocTag> allocs{sys_alloc};
     gpu::ResourcePool<CommandBufferInfo, gpu::CommandBufferTag> commandBuffers{sys_alloc};
@@ -430,20 +440,39 @@ namespace gpu {
             vkCheck(vkCreatePipelineLayout(ctx.device, &pipelineLayoutCI, nullptr, &ctx.commonPipelineLayoutCompute));
         }
 
+        // Global Semaphore
+        {
+            VkSemaphoreTypeCreateInfo typeInfo {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                .initialValue = 0,
+            };
+
+            VkSemaphoreCreateInfo semCI {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                .pNext = &typeInfo,
+            };
+
+            vkCheck(vkCreateSemaphore(ctx.device, &semCI, nullptr, &ctx.frameTimeline));
+        }
+
         return true;
     }
 
     void shutdown(void) {
-        destroySwapchain(ctx.swapchain);
 
         if (ctx.device) {
             vkDeviceWaitIdle(ctx.device);
 
+            destroySwapchain(ctx.swapchain);
+
             vkDestroyDescriptorSetLayout(ctx.device, ctx.textureDescriptorLayout, nullptr);
             vkDestroyDescriptorSetLayout(ctx.device, ctx.samplerDescriptorLayout, nullptr);
 
+            vkDestroySemaphore(ctx.device, ctx.frameTimeline, nullptr);
+
             for (auto& frame : ctx.perFrames) {
-                vkDestroyFence(ctx.device, frame.fence, nullptr);
+                //vkDestroyFence(ctx.device, frame.fence, nullptr);
                 vkDestroySemaphore(ctx.device, frame.acquireSemaphore, nullptr);
                 vkDestroyCommandPool(ctx.device, frame.commandPool, nullptr);
                 frame.arena.destroy();
@@ -598,11 +627,11 @@ namespace gpu {
             VkSemaphoreCreateInfo semaphoreCI { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
             vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &frame.acquireSemaphore));
 
-            VkFenceCreateInfo fenceCI {
-                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-                .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-            };
-            vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frame.fence));
+            //VkFenceCreateInfo fenceCI {
+            //    .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            //    .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+            //};
+            //vkCheck(vkCreateFence(ctx.device, &fenceCI, nullptr, &frame.fence));
         }
     }
 
@@ -611,18 +640,14 @@ namespace gpu {
 
         VkSwapchainKHR oldSwapchain = ctx.swapchain.handle;
 
-        // reset ctx.swapchain
-        for (auto semaphore : ctx.swapchain.presentSemaphores) {
-            vkDestroySemaphore(ctx.device, semaphore, nullptr);
-        }
-        ctx.swapchain.presentSemaphores.reset();
+        const Ulen oldSemCount = ctx.swapchain.presentSemaphores.length();
+
         for (auto imageView : ctx.swapchain.imageViews) {
             vkDestroyImageView(ctx.device, imageView, nullptr);
         }
-        ctx.swapchain.imageViews.reset();
-        ctx.swapchain.images.reset();
+        ctx.swapchain.imageViews.clear();
+        ctx.swapchain.images.clear();
 
-        // recreate swapchain
         VkSurfaceCapabilitiesKHR surfaceCaps{0};
         vkCheck(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(ctx.physicalDevice, ctx.surface, &surfaceCaps));
 
@@ -694,9 +719,7 @@ namespace gpu {
         vkCheck(vkGetSwapchainImagesKHR(ctx.device, ctx.swapchain.handle, &imageCount, ctx.swapchain.images.data()));
 
         ctx.swapchain.imageViews.resize(imageCount);
-        ctx.swapchain.presentSemaphores.resize(imageCount);
-
-        for (Ulen i = 0; i < ctx.swapchain.images.length(); i++) {
+        for (Ulen i = 0; i < imageCount; i++) {
             VkImageViewCreateInfo imageCI {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                 .image = ctx.swapchain.images[i],
@@ -709,9 +732,22 @@ namespace gpu {
                 },
             };
             vkCheck(vkCreateImageView(ctx.device, &imageCI, nullptr, &ctx.swapchain.imageViews[i]));
+        }
 
-            VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-            vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &ctx.swapchain.presentSemaphores[i]));
+        // --- Sémaphores ---
+        if (imageCount < oldSemCount) {
+            for (Ulen i = imageCount; i < oldSemCount; i++) {
+                vkDestroySemaphore(ctx.device, ctx.swapchain.presentSemaphores[i], nullptr);
+            }
+        }
+
+        ctx.swapchain.presentSemaphores.resize(imageCount);
+
+        if (imageCount > oldSemCount) {
+            for (Ulen i = oldSemCount; i < imageCount; i++) {
+                VkSemaphoreCreateInfo semaphoreCI { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+                vkCheck(vkCreateSemaphore(ctx.device, &semaphoreCI, nullptr, &ctx.swapchain.presentSemaphores[i]));
+            }
         }
     }
 
@@ -1315,45 +1351,76 @@ namespace gpu {
 
         vkCheck(vkEndCommandBuffer(cbInfo->handle));
 
-        VkSubmitInfo submitInfo {
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cbInfo->handle,
+        auto& frame = ctx.perFrames[ctx.frameIndex];
+        ctx.frameValue += 1;
+        const Uint64 thisSubmitValue = ctx.frameValue;
+
+        VkCommandBufferSubmitInfo cbSubmit {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .commandBuffer = cbInfo->handle,
         };
 
-        auto& frame = ctx.perFrames[ctx.frameIndex];
-        VkFence fenceToSignal = VK_NULL_HANDLE;
+        VkSemaphoreSubmitInfo waits[2];
+        VkSemaphoreSubmitInfo signals[2];
+        Uint32 waitCount = 0, signalCount = 0;
+
+        signals[signalCount++] = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = ctx.frameTimeline,
+            .value = thisSubmitValue,
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        };
 
         // C'est ici que la magie de la V1 s'opère :
         if (cbInfo->usesSwapchain) {
-            VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            submitInfo.waitSemaphoreCount = 1;
-            submitInfo.pWaitSemaphores = &frame.acquireSemaphore;
-            submitInfo.pWaitDstStageMask = &waitStage;
-            submitInfo.signalSemaphoreCount = 1;
-            submitInfo.pSignalSemaphores = &ctx.swapchain.presentSemaphores[ctx.imageIndex];
+            waits[waitCount++] = {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = frame.acquireSemaphore,
+                .stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            };
 
-            fenceToSignal = frame.fence;
+            signals[signalCount++] = {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                .semaphore = ctx.swapchain.presentSemaphores[ctx.imageIndex],
+                .stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+            };
         }
 
-        vkCheck(vkQueueSubmit(ctx.queue, 1, &submitInfo, fenceToSignal));
+        VkSubmitInfo2 submitInfo {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = waitCount,
+            .pWaitSemaphoreInfos = waits,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cbSubmit,
+            .signalSemaphoreInfoCount = signalCount,
+            .pSignalSemaphoreInfos = signals,
+        };
+
+        vkCheck(vkQueueSubmit2(ctx.queue, 1, &submitInfo, VK_NULL_HANDLE));
+
+        frame.lastSubmitValue = thisSubmitValue;
     }
 
     Bool acquireNextImage(Uint32& outWidth, Uint32& outHeight) {
         auto& frame = ctx.perFrames[ctx.frameIndex];
 
-        vkCheck(vkWaitForFences(ctx.device, 1, &frame.fence, VK_TRUE, UINT64_MAX));
-
-        VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle, UINT64_MAX, frame.acquireSemaphore, VK_NULL_HANDLE, &ctx.imageIndex);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR) {
-            return false;
+        if (frame.lastSubmitValue > 0) {
+            const uint64_t waitValue = frame.lastSubmitValue;
+            VkSemaphoreWaitInfo waitInfo {
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                .semaphoreCount = 1,
+                .pSemaphores = &ctx.frameTimeline,
+                .pValues = &waitValue,
+            };
+            vkCheck(vkWaitSemaphores(ctx.device, &waitInfo, UINT64_MAX));
         }
-        
-        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
-            vkCheck(res);
-        }
 
-        vkCheck(vkResetFences(ctx.device, 1, &frame.fence));
+        VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain.handle,
+                                             UINT64_MAX, frame.acquireSemaphore,
+                                             VK_NULL_HANDLE, &ctx.imageIndex);
+        if (res == VK_ERROR_OUT_OF_DATE_KHR) return false;
+        if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) vkCheck(res);
+
         frame.commandBufferCount = 0;
         frame.arena.reset();
 
