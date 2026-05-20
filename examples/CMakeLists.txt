@@ -1,3 +1,4 @@
+
 function(compile_slang_shader_graphics TARGET_NAME SHADER_SOURCE ENTRY_POINT OUTPUT_NAME)
   set(OUTPUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/shaders/${OUTPUT_NAME}")
 
@@ -71,3 +72,10 @@ add_custom_command(
           $<TARGET_FILE_DIR:5_3D>/assets
 )
 
+if(USE_ASAN AND TARGET asan_config)
+  target_link_libraries(1_triangle PRIVATE asan_config)
+  target_link_libraries(2_compute PRIVATE asan_config)
+  target_link_libraries(3_textures PRIVATE asan_config)
+  target_link_libraries(4_indirect_triangles PRIVATE asan_config)
+  target_link_libraries(5_3D PRIVATE asan_config)
+endif()

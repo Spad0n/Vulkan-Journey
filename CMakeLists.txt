@@ -10,6 +10,21 @@ set(CMAKE_CXX_EXTENSION OFF)
 
 find_package(Vulkan REQUIRED)
 
+if(USE_ASAN)
+  add_library(asan_config INTERFACE)
+  if (MSVC)
+    target_compile_options(asan_config INTERFACE /fsanitize=address)
+    target_link_options(asan_config INTERFACE /fsanitize=address)
+  else()
+    target_compile_options(asan_config INTERFACE
+      -fsanitize=address
+      -fno-omit-frame-pointer
+    )
+    target_link_options(asan_config INTERFACE -fsanitize=address)
+  endif()
+  message(STATUS "ASan configuration created")
+endif()
+
 if(WIN32)
   foreach(flag_var
           CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELEASE
