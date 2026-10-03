@@ -1,12 +1,6 @@
 # Vulkan Journey: Exploring Modern Graphics
 
 ![Vulkan 1.3](https://img.shields.io/badge/Vulkan-1.3+-red.svg)
-![Status: Unmaintained](https://img.shields.io/badge/status-unmaintained-lightgrey.svg)
-
-> [!IMPORTANT]
-> **This project is no longer maintained.**
-> My active Vulkan sandbox in C++ is now [**wvk**](https://github.com/Spad0n/wvk).
-> Note that wvk does not use some of the features explored here: it binds resources through classic descriptor sets (a bindless heap with `VK_EXT_mutable_descriptor_type`) instead of descriptor buffers (`VK_EXT_descriptor_buffer`), and it does not rely on extended dynamic state 3 (`VK_EXT_extended_dynamic_state_3`). This repository remains a useful reference for those topics.
 
 **Warning:** This is an experimental sandbox for learning and exploring modern Vulkan. It is not intended for production use.
 
@@ -15,7 +9,7 @@
 The objective is to master **Vulkan 1.3+** and modern rendering techniques. 
 This project is heavily inspired by Sebastian Aaltonen's blog post ["No Graphics API"](https://www.sebastianaaltonen.com/blog/no-graphics-api), focusing on a more "compute-like" interface for the GPU, reducing CPU overhead and abstraction layers.
 
-## Samples & Progress
+## Samples
 
 ### 1. Hello Triangle
 ![Triangle](./screenshots/triangle.png)
@@ -97,6 +91,9 @@ Shaders, textures and assets are loaded with relative paths, so run the executab
 cd build/examples
 ./1_triangle
 ```
+
+## Status
+This project is feature-complete as a learning sandbox and is no longer actively developed. My ongoing Vulkan work continues in [wvk](https://github.com/Spad0n/wvk), a reusable Vulkan 1.3 library (mesh shaders, Dear ImGui backend).
 
 ## References & Inspiration
 - ["No Graphics API"](https://www.sebastianaaltonen.com/blog/no-graphics-api)
