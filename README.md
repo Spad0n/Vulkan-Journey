@@ -1,6 +1,12 @@
 # Vulkan Journey: Exploring Modern Graphics
 
 ![Vulkan 1.3](https://img.shields.io/badge/Vulkan-1.3+-red.svg)
+![Status: Unmaintained](https://img.shields.io/badge/status-unmaintained-lightgrey.svg)
+
+> [!IMPORTANT]
+> **This project is no longer maintained.**
+> My active Vulkan sandbox in C++ is now [**wvk**](https://github.com/Spad0n/wvk).
+> Note that wvk does not use some of the features explored here: it binds resources through classic descriptor sets (a bindless heap with `VK_EXT_mutable_descriptor_type`) instead of descriptor buffers (`VK_EXT_descriptor_buffer`), and it does not rely on extended dynamic state 3 (`VK_EXT_extended_dynamic_state_3`). This repository remains a useful reference for those topics.
 
 **Warning:** This is an experimental sandbox for learning and exploring modern Vulkan. It is not intended for production use.
 
@@ -15,7 +21,7 @@ This project is heavily inspired by Sebastian Aaltonen's blog post ["No Graphics
 ![Triangle](./screenshots/triangle.png)
 
 ### 2. Compute Shader (Graph Analytics)
-Beyond rendering: this sample computes the total number of triangles in a undirected graph using its adjacency matrix $A$. 
+Beyond rendering: this sample computes the total number of triangles in an undirected graph using its adjacency matrix $A$. 
 ![Compute Shader](./screenshots/compute.png)
 output:
 ```
@@ -26,7 +32,7 @@ Number of triangles = 4
 ```
 
 ### 3. Textures
-![Compute Shader](./screenshots/textures.png)
+![Textures](./screenshots/textures.png)
 
 ### 4. Indirect Triangles
 ![Indirect Triangle](./screenshots/indirect.png)
@@ -38,7 +44,17 @@ Number of triangles = 4
 - **Vulkan 1.3 Core**
 - **Descriptor Buffers** (`VK_EXT_descriptor_buffer`): Modern way to bind resources without Descriptor Sets.
 - **Dynamic State** (`VK_EXT_extended_dynamic_state_3`): To reduce Pipeline State Object (PSO) bloat.
-- **GPU-Driven Rendering** (Planned/Current focus).
+- **Dynamic Rendering**: No render passes or framebuffers.
+- **Synchronization2** and **Timeline Semaphores**: A single timeline semaphore tracks frames in flight.
+- **Buffer Device Address**: Shaders receive raw GPU pointers through push constants.
+- **GPU-Driven Rendering** (current focus): Indirect draws with GPU-side draw count (`vkCmdDrawIndexedIndirectCount`).
+
+### Dependencies (bundled in `external/`)
+- [GLFW 3.4](https://www.glfw.org/)
+- [volk](https://github.com/zeux/volk)
+- [Vulkan Memory Allocator 3.3.0](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator)
+- [GLM](https://github.com/g-truc/glm)
+- ctl: a small custom template library (allocators, containers, `defer`)
 
 ## Prerequisites
 
@@ -47,7 +63,7 @@ Before building, ensure you have:
 - A GPU with drivers supporting `Descriptor Buffers`
 - **CMake** (3.25+)
 - **C++20**
-- **Slang** for compiling slang shader into SPIR-V
+- **Slang** (`slangc` in your `PATH`) for compiling Slang shaders into SPIR-V
 
 ## Building the project
 
@@ -67,6 +83,19 @@ cmake --build build
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Debug -DGLFW_BUILD_WAYLAND=OFF -DGLFW_BUILD_X11=ON
 cmake --build build
+```
+
+> **Note (Windows):** C++ exceptions and RTTI are disabled (`/EHsc` and `/GR` are stripped from the compiler flags).
+
+### AddressSanitizer
+Add `-DUSE_ASAN=ON` to the configure command to build the samples with ASan.
+
+## Running the samples
+
+Shaders, textures and assets are loaded with relative paths, so run the executables from the build output directory:
+```sh
+cd build/examples
+./1_triangle
 ```
 
 ## References & Inspiration
